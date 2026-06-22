@@ -1,0 +1,787 @@
+#!/usr/bin/env node
+import { Command, Option } from "commander";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { answerQuestion } from "./ask.js";
+import { classifyOne } from "./classify.js";
+import { clearAuth, findVideo, loadCookie, loadPreferences, loadVideos, mergeVideos, readTextInput, saveAuth, savePreferences, saveVideos } from "./store.js";
+import { commandsDir, dataDir, ensureDataDirs, libraryDir, searchIndexPath, toDisplayPath, videosJsonlPath } from "./paths.js";
+import { compileWiki, exportMarkdown, lintWiki } from "./markdown.js";
+import { downloadMedia } from "./media.js";
+import { formatSearchResults, loadSearchIndex, saveSearchIndex, searchWithIndex } from "./search.js";
+import { fetchCollection, fetchLiked, fetchPlaylist, fetchSingleUrl, fetchUserPosts, fetchVideoSearch, videosFromImport, videosFromUrls } from "./tiktok.js";
+import { transcribeVideo, type SttEngine } from "./transcribe.js";
+import type { SearchFilters, TikTokSource, TikTokVideo } from "./types.js";
+import { createCommand, createLibraryPage, deleteLibraryPage, listCommands, searchLibrary, showLibraryPage, updateLibraryPage, validateCommands } from "./library.js";
+import { installSkill, skillContent, uninstallSkill } from "./skill.js";
+
+const require = createRequire(import.meta.url);
+
+function version(): string {
+  try {
+    return (require("../package.json") as { version?: string }).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
+function safe(fn: (...args: any[]) => Promise<void>): (...args: any[]) => Promise<void> {
+  return async (...args: any[]) => {
+    try {
+      await fn(...args);
+    } catch (error) {
+      console.error(`Error: ${(error as Error).message}`);
+      process.exitCode = 1;
+    }
+  };
+}
+
+function collect(value: string, previous: string[] = []): string[] {
+  previous.push(value);
+  return previous;
+}
+
+function boolFromString(value: string): boolean {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error("Expected true or false.");
+}
+
+function engineOption(): Option {
+  return new Option("--engine <engine>", "Analysis engine").choices(["regex", "ollama"]);
+}
+
+export function buildCli(): Command {
+  const program = new Command();
+  program
+    .name("tt")
+    .description("Local-first CLI for saved TikTok videos, transcripts, search, and agent workflows.")
+    .version(version())
+    .showHelpAfterError();
+
+  program
+    .command("auth")
+    .description("Manage a local TikTok cookie for private sources")
+    .addCommand(
+      new Command("set")
+        .description("Save a TikTok cookie locally")
+        .option("--cookie <cookie>", "Cookie string")
+        .option("--stdin", "Read cookie from stdin")
+        .action(
+          safe(async (options) => {
+            const cookie = options.stdin ? (await readTextInput("-")).trim() : options.cookie;
+            if (!cookie) throw new Error("Pass --cookie or --stdin.");
+            ensureDataDirs();
+            await saveAuth({ cookie, updatedAt: new Date().toISOString() });
+            console.log("Saved TikTok cookie locally.");
+          }),
+        ),
+    )
+    .addCommand(
+      new Command("show").description("Show whether a cookie is saved").action(
+        safe(async () => {
+          const cookie = await loadCookie();
+          console.log(cookie ? `Cookie saved (${cookie.length} chars).` : "No cookie saved.");
+        }),
+      ),
+    )
+    .addCommand(
+      new Command("clear").description("Remove saved TikTok cookie").action(
+        safe(async () => {
+          await clearAuth();
+          console.log("Removed saved TikTok cookie.");
+        }),
+      ),
+    );
+
+  program
+    .command("sync")
+    .description("Sync TikTok sources into the local archive")
+    .option("--collection <idOrUrl>", "TikTok collection id or URL", collect, [])
+    .option("--playlist <idOrUrl>", "TikTok playlist id or URL", collect, [])
+    .option("--liked <username>", "Sync a user's liked videos; usually requires cookie", collect, [])
+    .option("--user <username>", "Sync a user's posts", collect, [])
+    .option("--search-video <query>", "Sync video search results", collect, [])
+    .option("--url <url>", "Sync one TikTok URL", collect, [])
+    .option("--urls-file <path>", "Newline-delimited TikTok URLs")
+    .option("--input <path>", "Import JSON, JSONL, or raw API response")
+    .option("--cookie <cookie>", "TikTok cookie for API calls")
+    .option("--cookie-file <path>", "Read TikTok cookie from file")
+    .option("--proxy <url>", "Proxy passed to TikTok API and yt-dlp")
+    .option("--limit <n>", "Max items per source", parseNumber, 30)
+    .option("--page <n>", "Start page", parseNumber, 1)
+    .option("--pages <n>", "Max pages per paged source", parseNumber)
+    .option("--rebuild", "Replace archive with this sync result", false)
+    .option("--download", "Download media after syncing", false)
+    .option("--audio", "When downloading, extract audio only", false)
+    .option("--transcribe", "Transcribe after downloading or when audio/video already exists", false)
+    .option("--classify", "Classify synced records after sync/transcription", false)
+    .option("--yt-dlp <command>", "yt-dlp command path", "yt-dlp")
+    .option("--yt-dlp-cookies <path>", "Netscape cookies file for yt-dlp")
+    .option("--cookies-from-browser <browser>", "Forward to yt-dlp --cookies-from-browser")
+    .option("--stt-engine <engine>", "whisper, whisper-cpp, or custom", "whisper")
+    .option("--stt-command <command>", "STT command path or template")
+    .option("--stt-model <model>", "STT model name/path")
+    .option("--language <code>", "STT language code")
+    .addOption(engineOption().default("regex"))
+    .option("--model <model>", "Local model for Ollama classification")
+    .option("--ollama-url <url>", "Ollama base URL", "http://localhost:11434")
+    .action(
+      safe(async (options) => {
+        ensureDataDirs();
+        const cookie = await loadCookie({ cookie: options.cookie, cookieFile: options.cookieFile });
+        const discovered: TikTokVideo[] = [];
+        const fetchOptions = {
+          cookie,
+          proxy: options.proxy as string | undefined,
+          limit: Number(options.limit),
+          page: Number(options.page),
+          pages: options.pages == null ? undefined : Number(options.pages),
+        };
+
+        for (const value of options.collection as string[]) discovered.push(...(await fetchCollection(value, fetchOptions)));
+        for (const value of options.playlist as string[]) discovered.push(...(await fetchPlaylist(value, fetchOptions)));
+        for (const value of options.liked as string[]) discovered.push(...(await fetchLiked(value, fetchOptions)));
+        for (const value of options.user as string[]) discovered.push(...(await fetchUserPosts(value, fetchOptions)));
+        for (const value of options.searchVideo as string[]) discovered.push(...(await fetchVideoSearch(value, fetchOptions)));
+        for (const value of options.url as string[]) discovered.push(await fetchSingleUrl(value, fetchOptions));
+
+        if (options.urlsFile) {
+          const urls = (await fs.readFile(String(options.urlsFile), "utf8"))
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter(Boolean);
+          discovered.push(...videosFromUrls(urls));
+        }
+
+        if (options.input) {
+          discovered.push(...(await readImport(String(options.input))));
+        }
+
+        if (discovered.length === 0) throw new Error("No TikTok source supplied. Try --collection, --url, --urls-file, or --input.");
+        const sync = await mergeVideos(discovered, { rebuild: Boolean(options.rebuild) });
+        console.log(`Synced ${sync.added} new, ${sync.updated} updated, ${sync.unchanged} unchanged (${sync.total} total).`);
+
+        let videos = await loadVideos();
+        const touched = new Set(sync.ids);
+        if (options.download) {
+          videos = await runDownloads(videos, touched, {
+            ytDlp: options.ytDlp,
+            proxy: options.proxy,
+            cookiesFile: options.ytDlpCookies,
+            cookiesFromBrowser: options.cookiesFromBrowser,
+            audioOnly: Boolean(options.audio),
+          });
+        }
+        if (options.transcribe) {
+          videos = await runTranscription(videos, touched, {
+            engine: options.sttEngine as SttEngine,
+            command: options.sttCommand,
+            model: options.sttModel,
+            language: options.language,
+          });
+        }
+        if (options.classify) {
+          videos = await runClassification(videos, touched, {
+            engine: options.engine,
+            model: options.model,
+            ollamaBaseUrl: options.ollamaUrl,
+          });
+        }
+        const index = await saveSearchIndex(videos);
+        console.log(`Indexed ${index.recordCount} videos at ${toDisplayPath(searchIndexPath())}.`);
+      }),
+    );
+
+  program
+    .command("fetch-media")
+    .description("Download media for existing records with yt-dlp")
+    .option("--audio", "Extract audio only", false)
+    .option("--video", "Download video instead of audio", false)
+    .option("--force", "Redownload existing media", false)
+    .option("--limit <n>", "Max records", parseNumber)
+    .option("--query <query>", "Only records matching a search query")
+    .option("--yt-dlp <command>", "yt-dlp command path", "yt-dlp")
+    .option("--yt-dlp-cookies <path>", "Netscape cookies file for yt-dlp")
+    .option("--cookies-from-browser <browser>", "Forward to yt-dlp --cookies-from-browser")
+    .option("--proxy <url>", "Proxy URL")
+    .action(
+      safe(async (options) => {
+        const videos = await selectVideos(await loadVideos(), { query: options.query, limit: options.limit });
+        const touched = new Set(videos.map((video) => video.id));
+        const next = await runDownloads(await loadVideos(), touched, {
+          ytDlp: options.ytDlp,
+          proxy: options.proxy,
+          cookiesFile: options.ytDlpCookies,
+          cookiesFromBrowser: options.cookiesFromBrowser,
+          audioOnly: !options.video,
+          force: options.force,
+        });
+        await saveSearchIndex(next);
+      }),
+    );
+
+  program
+    .command("transcribe")
+    .description("Transcribe downloaded audio/video")
+    .option("--engine <engine>", "whisper, whisper-cpp, or custom", "whisper")
+    .option("--command <command>", "STT command path or custom template")
+    .option("--model <model>", "Model name/path")
+    .option("--language <code>", "Language code")
+    .option("--force", "Retranscribe existing transcripts", false)
+    .option("--limit <n>", "Max records", parseNumber)
+    .option("--query <query>", "Only records matching a search query")
+    .action(
+      safe(async (options) => {
+        const videos = await selectVideos(await loadVideos(), { query: options.query, limit: options.limit });
+        const touched = new Set(videos.map((video) => video.id));
+        const next = await runTranscription(await loadVideos(), touched, {
+          engine: options.engine as SttEngine,
+          command: options.command,
+          model: options.model,
+          language: options.language,
+          force: options.force,
+        });
+        await saveSearchIndex(next);
+      }),
+    );
+
+  program
+    .command("index")
+    .description("Rebuild search index")
+    .action(
+      safe(async () => {
+        const index = await saveSearchIndex(await loadVideos());
+        console.log(`Indexed ${index.recordCount} videos.`);
+      }),
+    );
+
+  program
+    .command("search")
+    .description("Full-text search across TikTok metadata and transcripts")
+    .argument("<query>", "Search query")
+    .option("--author <handle>", "Filter by author")
+    .option("--after <date>", "Created after YYYY-MM-DD")
+    .option("--before <date>", "Created before YYYY-MM-DD")
+    .option("--category <name>", "Filter by category")
+    .option("--domain <name>", "Filter by domain")
+    .option("--collection <name>", "Filter by collection/source")
+    .option("--has-transcript <true|false>", "Filter transcript presence", boolFromString)
+    .option("--limit <n>", "Max results", parseNumber, 20)
+    .option("--json", "JSON output", false)
+    .action(
+      safe(async (query, options) => {
+        const { videos, index } = await requireIndex();
+        const results = searchWithIndex(videos, index, { ...filtersFromOptions(options), query });
+        console.log(formatSearchResults(results, { json: options.json }));
+      }),
+    );
+
+  program
+    .command("list")
+    .description("List videos with filters")
+    .option("--query <query>", "Search query")
+    .option("--author <handle>", "Filter by author")
+    .option("--after <date>", "Created after YYYY-MM-DD")
+    .option("--before <date>", "Created before YYYY-MM-DD")
+    .option("--category <name>", "Filter by category")
+    .option("--domain <name>", "Filter by domain")
+    .option("--collection <name>", "Filter by collection/source")
+    .option("--source <source>", "collection, playlist, liked, user, search, url, import")
+    .option("--has-transcript <true|false>", "Filter transcript presence", boolFromString)
+    .option("--limit <n>", "Max results", parseNumber, 30)
+    .option("--offset <n>", "Offset", parseNumber, 0)
+    .option("--json", "JSON output", false)
+    .action(
+      safe(async (options) => {
+        const { videos, index } = await requireIndex();
+        const results = searchWithIndex(videos, index, filtersFromOptions(options));
+        if (options.json) console.log(JSON.stringify(results.map((result) => result.video), null, 2));
+        else console.log(formatList(results.map((result) => result.video)));
+      }),
+    );
+
+  program
+    .command("show")
+    .description("Show one video")
+    .argument("<idOrUrl>", "Video id, prefix, or URL")
+    .option("--json", "JSON output", false)
+    .action(
+      safe(async (idOrUrl, options) => {
+        const video = findVideo(await loadVideos(), idOrUrl);
+        if (!video) throw new Error(`No video found for ${idOrUrl}.`);
+        console.log(options.json ? JSON.stringify(video, null, 2) : formatVideo(video));
+      }),
+    );
+
+  program
+    .command("similar")
+    .description("Find videos similar to one saved video")
+    .argument("<idOrUrl>", "Video id, prefix, or URL")
+    .option("--limit <n>", "Max results", parseNumber, 10)
+    .action(
+      safe(async (idOrUrl, options) => {
+        const { videos, index } = await requireIndex();
+        const video = findVideo(videos, idOrUrl);
+        if (!video) throw new Error(`No video found for ${idOrUrl}.`);
+        const query = [video.description, video.classification?.summary, video.transcript?.text?.slice(0, 1000), ...(video.classification?.topics ?? [])]
+          .filter(Boolean)
+          .join(" ");
+        const results = searchWithIndex(videos, index, { query, limit: Number(options.limit) + 1 }).filter((result) => result.video.id !== video.id);
+        console.log(formatSearchResults(results.slice(0, Number(options.limit))));
+      }),
+    );
+
+  program
+    .command("sample")
+    .description("Show a random sample from a category")
+    .argument("<category>", "Category")
+    .option("--limit <n>", "Number to sample", parseNumber, 5)
+    .action(
+      safe(async (category, options) => {
+        const videos = (await loadVideos()).filter((video) => video.classification?.category === category);
+        const shuffled = [...videos].sort(() => Math.random() - 0.5).slice(0, Number(options.limit));
+        console.log(formatList(shuffled));
+      }),
+    );
+
+  program.command("stats").description("Show archive stats").action(safe(async () => console.log(formatStats(await loadVideos()))));
+  program.command("viz").description("Show a terminal dashboard").action(safe(async () => console.log(formatViz(await loadVideos()))));
+  program.command("categories").description("Show category distribution").action(safe(async () => console.log(formatCounts(await loadVideos(), (video) => video.classification?.category ?? "uncategorized"))));
+  program.command("domains").description("Show domain distribution").action(safe(async () => console.log(formatCounts(await loadVideos(), (video) => video.classification?.domain ?? "general"))));
+  program.command("collections").description("Show collection/source distribution").action(safe(async () => console.log(formatCounts(await loadVideos(), (video) => video.collection?.name ?? video.collection?.id ?? video.source))));
+
+  program
+    .command("classify")
+    .description("Classify videos by category/domain/topics")
+    .addOption(engineOption().default("regex"))
+    .option("--regex", "Use regex rules", false)
+    .option("--all", "Reclassify already-classified records", false)
+    .option("--limit <n>", "Max records", parseNumber)
+    .option("--model <model>", "Ollama model")
+    .option("--ollama-url <url>", "Ollama base URL")
+    .action(
+      safe(async (options) => {
+        const engine = options.regex ? "regex" : options.engine;
+        const videos = await loadVideos();
+        const eligible = videos
+          .filter((video) => options.all || !video.classification?.category)
+          .slice(0, options.limit == null ? undefined : Number(options.limit));
+        const touched = new Set(eligible.map((video) => video.id));
+        const next = await runClassification(videos, touched, {
+          engine,
+          model: options.model,
+          ollamaBaseUrl: options.ollamaUrl,
+        });
+        await saveSearchIndex(next);
+      }),
+    );
+
+  program
+    .command("model")
+    .description("View or change local model preferences")
+    .option("--classify-engine <engine>", "regex or ollama")
+    .option("--ask-engine <engine>", "extractive or ollama")
+    .option("--model <model>", "Default local model")
+    .option("--ollama-url <url>", "Ollama base URL")
+    .action(
+      safe(async (options) => {
+        const prefs = await loadPreferences();
+        const next = {
+          ...prefs,
+          classifyEngine: options.classifyEngine ?? prefs.classifyEngine,
+          askEngine: options.askEngine ?? prefs.askEngine,
+          model: options.model ?? prefs.model,
+          ollamaBaseUrl: options.ollamaUrl ?? prefs.ollamaBaseUrl,
+        };
+        if (JSON.stringify(next) !== JSON.stringify(prefs)) await savePreferences(next);
+        console.log(JSON.stringify(next, null, 2));
+      }),
+    );
+
+  program
+    .command("md")
+    .description("Export videos as Markdown pages")
+    .option("--changed", "Skip unchanged files", false)
+    .action(
+      safe(async (options) => {
+        const result = await exportMarkdown(await loadVideos(), { changedOnly: options.changed });
+        console.log(`Markdown export: ${result.written} written, ${result.skipped} skipped.`);
+      }),
+    );
+
+  program
+    .command("wiki")
+    .description("Compile an interlinked local wiki")
+    .action(
+      safe(async () => {
+        const result = await compileWiki(await loadVideos());
+        console.log(`Wiki written: ${result.written} files under ${toDisplayPath(libraryDir())}.`);
+      }),
+    );
+
+  program
+    .command("ask")
+    .description("Ask a question against local TikTok transcripts")
+    .argument("<question>", "Question")
+    .option("--engine <engine>", "extractive or ollama")
+    .option("--model <model>", "Ollama model")
+    .option("--ollama-url <url>", "Ollama base URL")
+    .option("--limit <n>", "Evidence count", parseNumber, 8)
+    .option("--save", "Save answer as a library page", false)
+    .action(
+      safe(async (question, options) => {
+        const prefs = await loadPreferences();
+        const { videos, index } = await requireIndex();
+        const results = searchWithIndex(videos, index, { query: question, limit: Number(options.limit) });
+        const answer = await answerQuestion(question, results, {
+          engine: options.engine ?? prefs.askEngine ?? "extractive",
+          model: options.model ?? prefs.model,
+          ollamaBaseUrl: options.ollamaUrl ?? prefs.ollamaBaseUrl,
+        });
+        console.log(answer);
+        if (options.save) {
+          const file = path.join(libraryDir(), "answers", `${Date.now()}-${slug(question)}.md`);
+          await fs.mkdir(path.dirname(file), { recursive: true });
+          await fs.writeFile(file, `# ${question}\n\n${answer}\n`, "utf8");
+          console.log(`Saved: ${toDisplayPath(file)}`);
+        }
+      }),
+    );
+
+  program
+    .command("lint")
+    .description("Check generated wiki links")
+    .option("--fix", "Create placeholder pages for missing links", false)
+    .action(
+      safe(async (options) => {
+        const result = await lintWiki({ fix: options.fix });
+        if (result.broken.length === 0) console.log("No broken wiki links.");
+        else {
+          console.log(result.broken.join("\n"));
+          if (result.fixed) console.log(`Fixed ${result.fixed} missing pages.`);
+        }
+      }),
+    );
+
+  addLibraryCommands(program);
+  addPortableCommandCommands(program);
+  addSkillCommands(program);
+
+  program.command("paths").description("Show data paths").option("--json", "JSON output", false).action(safe(async (options) => {
+    const paths = { dataDir: dataDir(), videos: videosJsonlPath(), index: searchIndexPath(), library: libraryDir(), commands: commandsDir() };
+    console.log(options.json ? JSON.stringify(paths, null, 2) : Object.entries(paths).map(([key, value]) => `${key}: ${toDisplayPath(value)}`).join("\n"));
+  }));
+  program.command("path").description("Print data directory").action(() => console.log(dataDir()));
+  program.command("status").description("Show archive status").option("--json", "JSON output", false).action(safe(async (options) => {
+    const videos = await loadVideos();
+    const status = {
+      videos: videos.length,
+      transcripts: videos.filter((video) => video.transcript?.text).length,
+      classified: videos.filter((video) => video.classification?.category).length,
+      dataDir: dataDir(),
+      libraryDir: libraryDir(),
+      indexExists: await fileExists(searchIndexPath()),
+    };
+    console.log(options.json ? JSON.stringify(status, null, 2) : formatStatus(status));
+  }));
+
+  return program;
+}
+
+async function runDownloads(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof downloadMedia>[1]): Promise<TikTokVideo[]> {
+  const next = [...videos];
+  let done = 0;
+  for (const [idx, video] of next.entries()) {
+    if (!touched.has(video.id)) continue;
+    const outcome = await downloadMedia(video, options);
+    next[idx] = { ...video, media: outcome.media };
+    if (outcome.changed) done += 1;
+    console.error(`media ${done}/${touched.size}: ${video.id}`);
+  }
+  await saveVideos(next);
+  console.log(`Media updated for ${done} videos.`);
+  return next;
+}
+
+async function runTranscription(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof transcribeVideo>[1]): Promise<TikTokVideo[]> {
+  const next = [...videos];
+  let done = 0;
+  for (const [idx, video] of next.entries()) {
+    if (!touched.has(video.id)) continue;
+    const outcome = await transcribeVideo(video, options);
+    if (outcome.transcript) next[idx] = { ...video, transcript: outcome.transcript };
+    if (outcome.changed) done += 1;
+    console.error(`transcribe ${done}/${touched.size}: ${video.id}`);
+  }
+  await saveVideos(next);
+  console.log(`Transcribed ${done} videos.`);
+  return next;
+}
+
+async function runClassification(videos: TikTokVideo[], touched: Set<string>, options: { engine?: "regex" | "ollama"; model?: string; ollamaBaseUrl?: string }): Promise<TikTokVideo[]> {
+  const next = [...videos];
+  let done = 0;
+  for (const [idx, video] of next.entries()) {
+    if (!touched.has(video.id)) continue;
+    const classification = await classifyOne(video, options);
+    next[idx] = { ...video, classification };
+    done += 1;
+    console.error(`classify ${done}/${touched.size}: ${video.id}`);
+  }
+  await saveVideos(next);
+  console.log(`Classified ${done} videos.`);
+  return next;
+}
+
+async function readImport(filePath: string): Promise<TikTokVideo[]> {
+  const text = await readTextInput(filePath);
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+  if (trimmed.startsWith("[") || trimmed.startsWith("{")) return videosFromImport(JSON.parse(trimmed) as unknown);
+  return trimmed
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .flatMap((line) => videosFromImport(JSON.parse(line) as unknown));
+}
+
+async function requireIndex() {
+  const videos = await loadVideos();
+  let index = await loadSearchIndex();
+  if (!index) index = await saveSearchIndex(videos);
+  return { videos, index };
+}
+
+async function selectVideos(videos: TikTokVideo[], options: { query?: string; limit?: number }): Promise<TikTokVideo[]> {
+  if (!options.query) return videos.slice(0, options.limit == null ? undefined : Number(options.limit));
+  const index = (await loadSearchIndex()) ?? (await saveSearchIndex(videos));
+  return searchWithIndex(videos, index, { query: options.query, limit: options.limit ?? 50 }).map((result) => result.video);
+}
+
+function filtersFromOptions(options: Record<string, unknown>): SearchFilters {
+  return {
+    author: optionString(options.author),
+    after: optionString(options.after),
+    before: optionString(options.before),
+    category: optionString(options.category),
+    domain: optionString(options.domain),
+    collection: optionString(options.collection),
+    source: optionString(options.source) as TikTokSource | undefined,
+    hasTranscript: typeof options.hasTranscript === "boolean" ? options.hasTranscript : undefined,
+    limit: optionNumber(options.limit),
+    offset: optionNumber(options.offset),
+    query: optionString(options.query),
+  };
+}
+
+function formatList(videos: TikTokVideo[]): string {
+  if (videos.length === 0) return "No videos.";
+  return videos
+    .map((video) => {
+      const category = video.classification?.category ? ` [${video.classification.category}]` : "";
+      const transcript = video.transcript?.text ? " transcript" : "";
+      return `${video.id} ${video.author?.username ? `@${video.author.username}` : "unknown"}${category}${transcript}\n  ${(video.description ?? "").replace(/\s+/g, " ").slice(0, 160)}\n  ${video.canonicalUrl ?? video.url}`;
+    })
+    .join("\n\n");
+}
+
+function formatVideo(video: TikTokVideo): string {
+  return [
+    `${video.id} ${video.author?.username ? `@${video.author.username}` : ""}`,
+    video.canonicalUrl ?? video.url,
+    "",
+    video.description ?? "",
+    "",
+    `Category: ${video.classification?.category ?? "uncategorized"}`,
+    `Domain: ${video.classification?.domain ?? "general"}`,
+    `Topics: ${(video.classification?.topics ?? []).join(", ") || "none"}`,
+    `Media: ${toDisplayPath(video.media?.audioPath ?? video.media?.videoPath) ?? "not downloaded"}`,
+    "",
+    "Transcript:",
+    video.transcript?.text ?? "No transcript yet.",
+  ].join("\n");
+}
+
+function formatStats(videos: TikTokVideo[]): string {
+  const transcriptCount = videos.filter((video) => video.transcript?.text).length;
+  const classifiedCount = videos.filter((video) => video.classification?.category).length;
+  const dates = videos.flatMap((video) => (video.createdAt ? [video.createdAt] : []));
+  const authors = countBy(videos, (video) => video.author?.username ?? "unknown");
+  return [
+    `${videos.length} videos`,
+    `${transcriptCount} transcripts (${percent(transcriptCount, videos.length)})`,
+    `${classifiedCount} classified (${percent(classifiedCount, videos.length)})`,
+    dates.length ? `Date range: ${dates.sort()[0]} to ${dates.sort().at(-1)}` : "Date range: unknown",
+    "",
+    "Top authors:",
+    formatCountMap(authors, 10),
+  ].join("\n");
+}
+
+function formatViz(videos: TikTokVideo[]): string {
+  return [
+    "TikTok Theory",
+    "",
+    formatStats(videos),
+    "",
+    "Categories:",
+    formatBars(countBy(videos, (video) => video.classification?.category ?? "uncategorized")),
+    "",
+    "Domains:",
+    formatBars(countBy(videos, (video) => video.classification?.domain ?? "general")),
+  ].join("\n");
+}
+
+function formatCounts(videos: TikTokVideo[], keyFn: (video: TikTokVideo) => string): string {
+  return formatCountMap(countBy(videos, keyFn), 50);
+}
+
+function formatBars(counts: Map<string, number>): string {
+  const max = Math.max(1, ...counts.values());
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 12)
+    .map(([key, count]) => `${key.padEnd(22)} ${"#".repeat(Math.max(1, Math.round((count / max) * 24)))} ${count}`)
+    .join("\n");
+}
+
+function formatCountMap(counts: Map<string, number>, limit: number): string {
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([key, count]) => `${key}: ${count}`)
+    .join("\n");
+}
+
+function countBy(videos: TikTokVideo[], keyFn: (video: TikTokVideo) => string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const video of videos) {
+    const key = keyFn(video);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function formatStatus(status: { videos: number; transcripts: number; classified: number; dataDir: string; libraryDir: string; indexExists: boolean }): string {
+  return [
+    `${status.videos} videos`,
+    `${status.transcripts} transcripts`,
+    `${status.classified} classified`,
+    `Index: ${status.indexExists ? "ready" : "missing"}`,
+    `Data: ${toDisplayPath(status.dataDir)}`,
+    `Library: ${toDisplayPath(status.libraryDir)}`,
+  ].join("\n");
+}
+
+function addLibraryCommands(program: Command): void {
+  const library = program.command("library").description("Search and manage local library pages");
+  library.command("search").argument("<query>").option("--limit <n>", "Max results", parseNumber, 20).action(safe(async (query, options) => {
+    const results = await searchLibrary(query, Number(options.limit));
+    console.log(results.map((result) => `${result.path} (${result.score})\n  ${result.preview}`).join("\n\n") || "No matches.");
+  }));
+  library.command("show").argument("<path>").option("--json", "JSON output", false).action(safe(async (pagePath, options) => {
+    const page = await showLibraryPage(pagePath);
+    console.log(options.json ? JSON.stringify(page, null, 2) : page.body);
+    if (!options.json) console.error(`sha256: ${page.sha256}`);
+  }));
+  library.command("create").argument("<path>").requiredOption("--stdin", "Read body from stdin").action(safe(async (pagePath) => {
+    const file = await createLibraryPage(pagePath, "-");
+    console.log(`Created ${toDisplayPath(file)}.`);
+  }));
+  library.command("update").argument("<path>").requiredOption("--stdin", "Read body from stdin").option("--expected-sha256 <hash>").action(safe(async (pagePath, options) => {
+    const file = await updateLibraryPage(pagePath, "-", options.expectedSha256);
+    console.log(`Updated ${toDisplayPath(file)}.`);
+  }));
+  library.command("delete").argument("<path>").action(safe(async (pagePath) => {
+    const file = await deleteLibraryPage(pagePath);
+    console.log(`Moved to ${toDisplayPath(file)}.`);
+  }));
+}
+
+function addPortableCommandCommands(program: Command): void {
+  const commands = program.command("commands").description("Manage portable command notes");
+  commands.command("list").action(safe(async () => console.log((await listCommands()).join("\n") || "No commands.")));
+  commands.command("new").argument("<name>").action(safe(async (name) => console.log(`Created ${toDisplayPath(await createCommand(name))}.`)));
+  commands.command("validate").argument("[name]").action(safe(async (name) => {
+    const result = await validateCommands(name);
+    if (result.ok.length) console.log(`OK: ${result.ok.join(", ")}`);
+    if (result.issues.length) {
+      console.log(result.issues.join("\n"));
+      process.exitCode = 1;
+    }
+  }));
+}
+
+function addSkillCommands(program: Command): void {
+  const skill = program.command("skill").description("Install or show the agent skill");
+  skill.command("show").action(() => console.log(skillContent()));
+  skill.command("install").option("--target <target>", "codex, claude, or all", "all").action(safe(async (options) => {
+    const files = await installSkill(options.target);
+    console.log(files.map((file) => `Installed ${toDisplayPath(file)}`).join("\n"));
+  }));
+  skill.command("uninstall").option("--target <target>", "codex, claude, or all", "all").action(safe(async (options) => {
+    const files = await uninstallSkill(options.target);
+    console.log(files.map((file) => `Removed ${toDisplayPath(file)}`).join("\n"));
+  }));
+}
+
+function optionString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function optionNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function parseNumber(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(`Invalid number: ${value}`);
+  return parsed;
+}
+
+function percent(part: number, total: number): string {
+  return total === 0 ? "0%" : `${Math.round((part / total) * 100)}%`;
+}
+
+function slug(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "answer";
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function showDashboard(): Promise<void> {
+  ensureDataDirs();
+  const videos = await loadVideos();
+  console.log([
+    `TikTok Theory CLI v${version()}`,
+    "",
+    formatStatus({
+      videos: videos.length,
+      transcripts: videos.filter((video) => video.transcript?.text).length,
+      classified: videos.filter((video) => video.classification?.category).length,
+      dataDir: dataDir(),
+      libraryDir: libraryDir(),
+      indexExists: await fileExists(searchIndexPath()),
+    }),
+    "",
+    "Next: tt sync --collection <url> --download --audio --transcribe --classify",
+    "Explore: tt search \"life advice\" | tt viz | tt wiki",
+  ].join("\n"));
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const program = buildCli();
+  if (process.argv.length <= 2) {
+    await showDashboard();
+  } else {
+    await program.parseAsync(process.argv);
+  }
+}
