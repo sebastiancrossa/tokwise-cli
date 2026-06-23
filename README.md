@@ -148,3 +148,7 @@ tokwise transcribe --engine custom \
 ```
 
 The custom command should write JSON, plain text, or print the transcript to stdout.
+
+## Attribution
+
+Tokwise was inspired by [afar1/fieldtheory-cli](https://github.com/afar1/fieldtheory-cli), especially its local-first approach to syncing personal saved content into searchable files, Markdown, and agent-readable workflows.
