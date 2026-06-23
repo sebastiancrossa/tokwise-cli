@@ -1,4 +1,4 @@
-# Tokwise
+# Tokwise CLI
 
 Local-first command line tooling for turning saved short-form videos into a searchable, transcript-centered knowledge base.
 
