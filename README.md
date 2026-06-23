@@ -30,6 +30,11 @@ Requires Node.js 20+. Media download requires `yt-dlp` on PATH. Transcription re
 
 ```bash
 # Optional: save a browser cookie for private collections or liked videos.
+# Easiest on macOS: pull it straight from a logged-in Chromium browser.
+tokwise auth from-browser            # auto-detects Chrome, Brave, Edge, Arc, or Chromium
+tokwise auth refresh                 # re-pull later when the session goes stale
+
+# Or paste a cookie manually (works everywhere).
 tokwise auth set --cookie "YOUR_COOKIE"
 
 # Sync a collection, download audio, transcribe, classify, and index.
@@ -124,7 +129,7 @@ tokwise sync --urls-file urls.txt
 tokwise sync --input export.jsonl
 ```
 
-Private collections usually require a fresh browser cookie copied from a logged-in session. Cookies are stored locally only when you run `tokwise auth set`.
+Private collections usually require a fresh browser cookie from a logged-in session. On macOS, `tokwise auth from-browser` reads and decrypts it straight from a logged-in Chromium browser (Chrome, Brave, Edge, Arc, or Chromium) via the macOS Keychain, and `tokwise auth refresh` re-pulls it when the session goes stale. On other platforms or browsers, paste it manually with `tokwise auth set`. Cookies are stored locally only (`auth.json`, chmod 600).
 
 ## Transcription
 

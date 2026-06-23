@@ -7,7 +7,8 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { answerQuestion } from "./ask.js";
 import { classifyOne } from "./classify.js";
-import { clearAuth, findVideo, loadCookie, loadPreferences, loadVideos, mergeVideos, readTextInput, saveAuth, savePreferences, saveVideos } from "./store.js";
+import { clearAuth, findVideo, loadAuth, loadCookie, loadPreferences, loadVideos, mergeVideos, readTextInput, saveAuth, savePreferences, saveVideos } from "./store.js";
+import { extractTikTokCookie, isChromiumBrowser, SUPPORTED_BROWSERS, type ChromiumBrowser } from "./browser-cookies.js";
 import { commandsDir, dataDir, ensureDataDirs, libraryDir, searchIndexPath, toDisplayPath, videosJsonlPath } from "./paths.js";
 import { compileWiki, exportMarkdown, lintWiki } from "./markdown.js";
 import { downloadMedia } from "./media.js";
@@ -54,6 +55,15 @@ function engineOption(): Option {
   return new Option("--engine <engine>", "Analysis engine").choices(["regex", "ollama"]);
 }
 
+function resolveBrowserOption(value: unknown): ChromiumBrowser | undefined {
+  if (value == null) return undefined;
+  const name = String(value).toLowerCase();
+  if (!isChromiumBrowser(name)) {
+    throw new Error(`Unsupported browser "${value}". Choose one of: ${SUPPORTED_BROWSERS.join(", ")}.`);
+  }
+  return name;
+}
+
 export function buildCli(): Command {
   const program = new Command();
   program
@@ -75,16 +85,81 @@ export function buildCli(): Command {
             const cookie = options.stdin ? (await readTextInput("-")).trim() : options.cookie;
             if (!cookie) throw new Error("Pass --cookie or --stdin.");
             ensureDataDirs();
-            await saveAuth({ cookie, updatedAt: new Date().toISOString() });
+            await saveAuth({ cookie, source: "manual", updatedAt: new Date().toISOString() });
             console.log("Saved browser cookie locally.");
+          }),
+        ),
+    )
+    .addCommand(
+      new Command("from-browser")
+        .description("Extract the TikTok cookie from a logged-in macOS Chromium browser")
+        .option("--browser <name>", `Browser to read from (${SUPPORTED_BROWSERS.join(", ")}); auto-detected if omitted`)
+        .option("--profile <name>", "Browser profile directory", "Default")
+        .option("--print", "Print the cookie header instead of saving it")
+        .action(
+          safe(async (options) => {
+            const browser = resolveBrowserOption(options.browser);
+            const profile = String(options.profile);
+            const extracted = await extractTikTokCookie({ browser, profile });
+            if (!extracted.cookie.includes("sessionid=")) {
+              console.warn("Warning: extracted cookie has no sessionid; the session may be incomplete or logged out.");
+            }
+            if (options.print) {
+              console.log(extracted.cookie);
+              return;
+            }
+            ensureDataDirs();
+            await saveAuth({
+              cookie: extracted.cookie,
+              source: "browser",
+              browser: extracted.browser,
+              profile: extracted.profile,
+              updatedAt: new Date().toISOString(),
+            });
+            console.log(`Saved cookie from ${extracted.browser} (profile "${extracted.profile}").`);
+          }),
+        ),
+    )
+    .addCommand(
+      new Command("refresh")
+        .description("Re-extract the cookie using the browser and profile saved previously")
+        .action(
+          safe(async () => {
+            const auth = await loadAuth();
+            if (auth.source !== "browser" || !auth.browser) {
+              throw new Error("No browser-extracted cookie to refresh. Run `tw auth from-browser` first.");
+            }
+            const browser = resolveBrowserOption(auth.browser);
+            const profile = auth.profile ?? "Default";
+            const extracted = await extractTikTokCookie({ browser, profile });
+            if (!extracted.cookie.includes("sessionid=")) {
+              console.warn("Warning: extracted cookie has no sessionid; the session may be incomplete or logged out.");
+            }
+            ensureDataDirs();
+            await saveAuth({
+              cookie: extracted.cookie,
+              source: "browser",
+              browser: extracted.browser,
+              profile: extracted.profile,
+              updatedAt: new Date().toISOString(),
+            });
+            console.log(`Refreshed cookie from ${extracted.browser} (profile "${extracted.profile}").`);
           }),
         ),
     )
     .addCommand(
       new Command("show").description("Show whether a cookie is saved").action(
         safe(async () => {
-          const cookie = await loadCookie();
-          console.log(cookie ? `Cookie saved (${cookie.length} chars).` : "No cookie saved.");
+          const auth = await loadAuth();
+          if (!auth.cookie) {
+            console.log("No cookie saved.");
+            return;
+          }
+          const source =
+            auth.source === "browser"
+              ? `browser (${auth.browser ?? "unknown"}/${auth.profile ?? "Default"})`
+              : "manual";
+          console.log(`Cookie saved (${auth.cookie.length} chars, source: ${source}).`);
         }),
       ),
     )
