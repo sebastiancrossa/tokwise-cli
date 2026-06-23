@@ -13,6 +13,7 @@ export interface CommandResult {
 export async function runProcess(command: string, args: string[], options?: { cwd?: string }): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd: options?.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let settled = false;
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -23,8 +24,30 @@ export async function runProcess(command: string, args: string[], options?: { cw
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
     });
-    child.on("error", reject);
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      if (settled) return;
+      settled = true;
+      if (error.code === "ENOENT") {
+        resolve({
+          code: 127,
+          stdout,
+          stderr: `Command not found: ${command}. Install it or pass a custom command path.`,
+        });
+        return;
+      }
+      if (error.code === "EACCES") {
+        resolve({
+          code: 126,
+          stdout,
+          stderr: `Command is not executable: ${command}. Check permissions or pass a custom command path.`,
+        });
+        return;
+      }
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
       resolve({ code: code ?? 0, stdout, stderr });
     });
   });
