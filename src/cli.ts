@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { Command, Option } from "commander";
+import { realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { answerQuestion } from "./ask.js";
 import { classifyOne } from "./classify.js";
 import { clearAuth, findVideo, loadCookie, loadPreferences, loadVideos, mergeVideos, readTextInput, saveAuth, savePreferences, saveVideos } from "./store.js";
@@ -777,7 +779,16 @@ async function showDashboard(): Promise<void> {
   ].join("\n"));
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function isCliEntrypoint(importUrl = import.meta.url, argvPath = process.argv[1]): boolean {
+  if (!argvPath) return false;
+  try {
+    return realpathSync(fileURLToPath(importUrl)) === realpathSync(argvPath);
+  } catch {
+    return path.resolve(fileURLToPath(importUrl)) === path.resolve(argvPath);
+  }
+}
+
+if (isCliEntrypoint()) {
   const program = buildCli();
   if (process.argv.length <= 2) {
     await showDashboard();
