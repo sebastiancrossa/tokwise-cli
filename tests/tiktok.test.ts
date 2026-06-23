@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeVideo, videosFromUrls } from "../src/tiktok.js";
+import { extractItemsFromSuccessfulResponse, normalizeVideo, videosFromUrls } from "../src/tiktok.js";
 
 test("normalizeVideo maps collection response fields", () => {
   const video = normalizeVideo(
@@ -26,4 +26,47 @@ test("normalizeVideo maps collection response fields", () => {
 test("videosFromUrls infers video ids", () => {
   const [video] = videosFromUrls(["https://www.tiktok.com/@user/video/7123456789012345678"]);
   assert.equal(video?.id, "7123456789012345678");
+});
+
+test("extractItemsFromSuccessfulResponse reads wrapped collection item lists", () => {
+  const items = extractItemsFromSuccessfulResponse(
+    {
+      status: "success",
+      result: {
+        itemList: [{ id: "7123456789012345678", desc: "real video" }],
+      },
+    },
+    "collection",
+  );
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.id, "7123456789012345678");
+});
+
+test("extractItemsFromSuccessfulResponse rejects TikTok error responses", () => {
+  assert.throws(
+    () =>
+      extractItemsFromSuccessfulResponse(
+        {
+          status: "error",
+          message: "Network error",
+        },
+        "collection",
+      ),
+    /TikTok collection fetch failed: Network error/,
+  );
+});
+
+test("extractItemsFromSuccessfulResponse does not treat response wrappers as videos", () => {
+  const items = extractItemsFromSuccessfulResponse(
+    {
+      status: "success",
+      result: {
+        hasMore: false,
+      },
+    },
+    "collection",
+  );
+
+  assert.deepEqual(items, []);
 });
