@@ -9,8 +9,15 @@ export function expandHome(input: string): string {
 }
 
 export function dataDir(): string {
+  const preferred = process.env.TOKWISE_DATA_DIR ?? process.env.TW_DATA_DIR;
+  if (preferred) return path.resolve(expandHome(preferred));
+  const legacy = process.env.TT_DATA_DIR ?? process.env.TIKTOK_THEORY_DATA_DIR;
+  if (legacy) return path.resolve(expandHome(legacy));
+  const defaultDir = path.join(os.homedir(), ".tokwise");
+  const legacyDir = path.join(os.homedir(), ".tiktoktheory");
+  if (!fs.existsSync(defaultDir) && fs.existsSync(legacyDir)) return legacyDir;
   return path.resolve(
-    expandHome(process.env.TT_DATA_DIR ?? process.env.TIKTOK_THEORY_DATA_DIR ?? "~/.tiktoktheory"),
+    expandHome("~/.tokwise"),
   );
 }
 
@@ -47,7 +54,9 @@ export function preferencesPath(): string {
 }
 
 export function libraryDir(): string {
-  return path.resolve(expandHome(process.env.TT_LIBRARY_DIR ?? path.join(dataDir(), "library")));
+  return path.resolve(
+    expandHome(process.env.TOKWISE_LIBRARY_DIR ?? process.env.TW_LIBRARY_DIR ?? process.env.TT_LIBRARY_DIR ?? path.join(dataDir(), "library")),
+  );
 }
 
 export function markdownVideosDir(): string {
@@ -63,7 +72,9 @@ export function markdownDomainsDir(): string {
 }
 
 export function commandsDir(): string {
-  return path.resolve(expandHome(process.env.TT_COMMANDS_DIR ?? path.join(dataDir(), "commands")));
+  return path.resolve(
+    expandHome(process.env.TOKWISE_COMMANDS_DIR ?? process.env.TW_COMMANDS_DIR ?? process.env.TT_COMMANDS_DIR ?? path.join(dataDir(), "commands")),
+  );
 }
 
 export function ensureDir(dir: string): void {

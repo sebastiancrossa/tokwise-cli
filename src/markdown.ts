@@ -67,7 +67,7 @@ export function videoMarkdownPath(video: TikTokVideo): string {
 }
 
 export function renderVideoMarkdown(video: TikTokVideo): string {
-  const title = video.description?.split(/\r?\n/)[0]?.slice(0, 80) || `TikTok ${video.id}`;
+  const title = video.description?.split(/\r?\n/)[0]?.slice(0, 80) || `Clip ${video.id}`;
   const category = video.classification?.category ?? "uncategorized";
   const domain = video.classification?.domain ?? "general";
   const topics = video.classification?.topics ?? [];
@@ -149,7 +149,7 @@ function renderIndex(
   byDomain: Map<string, TikTokVideo[]>,
 ): string {
   return [
-    "# TikTok Theory Library",
+    "# Tokwise Library",
     "",
     `${videos.length} videos. ${videos.filter((video) => video.transcript?.text).length} transcripts.`,
     "",

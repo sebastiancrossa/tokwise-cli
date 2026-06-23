@@ -7,9 +7,9 @@ import { pathToFileURL } from "node:url";
 import { isCliEntrypoint } from "../src/cli.js";
 
 test("CLI entrypoint check accepts npm-link style symlinks", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-entrypoint-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tokwise-entrypoint-"));
   const target = path.join(dir, "cli.js");
-  const link = path.join(dir, "tt");
+  const link = path.join(dir, "tw");
   fs.writeFileSync(target, "#!/usr/bin/env node\n");
   fs.symlinkSync(target, link);
 

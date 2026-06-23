@@ -1,11 +1,11 @@
 {
-  "name": "tiktok-fieldtheory",
+  "name": "tokwise",
   "version": "0.1.0",
-  "description": "Local-first CLI for syncing, downloading, transcribing, searching, and analyzing saved TikTok videos.",
+  "description": "Local-first CLI for syncing, downloading, transcribing, searching, and analyzing saved short-form videos.",
   "type": "module",
   "bin": {
-    "tt": "dist/cli.js",
-    "tiktoktheory": "dist/cli.js"
+    "tokwise": "dist/cli.js",
+    "tw": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -23,7 +23,8 @@
   },
   "license": "MIT",
   "keywords": [
-    "tiktok",
+    "tokwise",
+    "short-form-video",
     "cli",
     "transcription",
     "local-first",

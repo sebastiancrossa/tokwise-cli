@@ -57,17 +57,17 @@ function engineOption(): Option {
 export function buildCli(): Command {
   const program = new Command();
   program
-    .name("tt")
-    .description("Local-first CLI for saved TikTok videos, transcripts, search, and agent workflows.")
+    .name("tokwise")
+    .description("Local-first CLI for saved short-form videos, transcripts, search, and agent workflows.")
     .version(version())
     .showHelpAfterError();
 
   program
     .command("auth")
-    .description("Manage a local TikTok cookie for private sources")
+    .description("Manage a local browser cookie for private sources")
     .addCommand(
       new Command("set")
-        .description("Save a TikTok cookie locally")
+        .description("Save a browser cookie locally")
         .option("--cookie <cookie>", "Cookie string")
         .option("--stdin", "Read cookie from stdin")
         .action(
@@ -76,7 +76,7 @@ export function buildCli(): Command {
             if (!cookie) throw new Error("Pass --cookie or --stdin.");
             ensureDataDirs();
             await saveAuth({ cookie, updatedAt: new Date().toISOString() });
-            console.log("Saved TikTok cookie locally.");
+            console.log("Saved browser cookie locally.");
           }),
         ),
     )
@@ -89,28 +89,28 @@ export function buildCli(): Command {
       ),
     )
     .addCommand(
-      new Command("clear").description("Remove saved TikTok cookie").action(
+      new Command("clear").description("Remove saved browser cookie").action(
         safe(async () => {
           await clearAuth();
-          console.log("Removed saved TikTok cookie.");
+          console.log("Removed saved browser cookie.");
         }),
       ),
     );
 
   program
     .command("sync")
-    .description("Sync TikTok sources into the local archive")
-    .option("--collection <idOrUrl>", "TikTok collection id or URL", collect, [])
-    .option("--playlist <idOrUrl>", "TikTok playlist id or URL", collect, [])
+    .description("Sync short-form video sources into the local archive")
+    .option("--collection <idOrUrl>", "Collection id or URL", collect, [])
+    .option("--playlist <idOrUrl>", "Playlist id or URL", collect, [])
     .option("--liked <username>", "Sync a user's liked videos; usually requires cookie", collect, [])
     .option("--user <username>", "Sync a user's posts", collect, [])
     .option("--search-video <query>", "Sync video search results", collect, [])
-    .option("--url <url>", "Sync one TikTok URL", collect, [])
-    .option("--urls-file <path>", "Newline-delimited TikTok URLs")
+    .option("--url <url>", "Sync one source URL", collect, [])
+    .option("--urls-file <path>", "Newline-delimited source URLs")
     .option("--input <path>", "Import JSON, JSONL, or raw API response")
-    .option("--cookie <cookie>", "TikTok cookie for API calls")
-    .option("--cookie-file <path>", "Read TikTok cookie from file")
-    .option("--proxy <url>", "Proxy passed to TikTok API and yt-dlp")
+    .option("--cookie <cookie>", "Browser cookie for API calls")
+    .option("--cookie-file <path>", "Read browser cookie from file")
+    .option("--proxy <url>", "Proxy passed to source API and yt-dlp")
     .option("--limit <n>", "Max items per source", parseNumber, 30)
     .option("--page <n>", "Start page", parseNumber, 1)
     .option("--pages <n>", "Max pages per paged source", parseNumber)
@@ -161,7 +161,7 @@ export function buildCli(): Command {
           discovered.push(...(await readImport(String(options.input))));
         }
 
-        if (discovered.length === 0) throw new Error("No TikTok source supplied. Try --collection, --url, --urls-file, or --input.");
+        if (discovered.length === 0) throw new Error("No source supplied. Try --collection, --url, --urls-file, or --input.");
         const sync = await mergeVideos(discovered, { rebuild: Boolean(options.rebuild) });
         console.log(`Synced ${sync.added} new, ${sync.updated} updated, ${sync.unchanged} unchanged (${sync.total} total).`);
 
@@ -261,7 +261,7 @@ export function buildCli(): Command {
 
   program
     .command("search")
-    .description("Full-text search across TikTok metadata and transcripts")
+    .description("Full-text search across clip metadata and transcripts")
     .argument("<query>", "Search query")
     .option("--author <handle>", "Filter by author")
     .option("--after <date>", "Created after YYYY-MM-DD")
@@ -425,7 +425,7 @@ export function buildCli(): Command {
 
   program
     .command("ask")
-    .description("Ask a question against local TikTok transcripts")
+    .description("Ask a question against local clip transcripts")
     .argument("<question>", "Question")
     .option("--engine <engine>", "extractive or ollama")
     .option("--model <model>", "Ollama model")
@@ -623,7 +623,7 @@ function formatStats(videos: TikTokVideo[]): string {
 
 function formatViz(videos: TikTokVideo[]): string {
   return [
-    "TikTok Theory",
+    "Tokwise",
     "",
     formatStats(videos),
     "",
@@ -763,7 +763,7 @@ async function showDashboard(): Promise<void> {
   ensureDataDirs();
   const videos = await loadVideos();
   console.log([
-    `TikTok Theory CLI v${version()}`,
+    `Tokwise CLI v${version()}`,
     "",
     formatStatus({
       videos: videos.length,
@@ -774,8 +774,8 @@ async function showDashboard(): Promise<void> {
       indexExists: await fileExists(searchIndexPath()),
     }),
     "",
-    "Next: tt sync --collection <url> --download --audio --transcribe --classify",
-    "Explore: tt search \"life advice\" | tt viz | tt wiki",
+    "Next: tokwise sync --collection <url> --download --audio --transcribe --classify",
+    "Explore: tokwise search \"life advice\" | tokwise viz | tokwise wiki",
   ].join("\n"));
 }
 

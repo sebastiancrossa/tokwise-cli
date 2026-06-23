@@ -54,7 +54,7 @@ export async function classifyOllama(video: TikTokVideo, options: ClassifyOption
   const baseUrl = options.ollamaBaseUrl ?? "http://localhost:11434";
   const model = options.model ?? "llama3.1";
   const prompt = [
-    "Classify this saved TikTok life-advice video.",
+    "Classify this saved short-form life-advice video.",
     "Return compact JSON with keys: category, domain, topics, summary.",
     "Categories should be short lowercase labels. Topics should be 3 to 7 short phrases.",
     "",

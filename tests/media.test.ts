@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { downloadTargetUrl } from "../src/media.js";
 import type { TikTokVideo } from "../src/types.js";
 
-test("downloadTargetUrl rejects hashed fake TikTok video urls before yt-dlp", () => {
+test("downloadTargetUrl rejects hashed fake source video urls before yt-dlp", () => {
   const video: TikTokVideo = {
     id: "85937719415fc3cf",
     url: "https://www.tiktok.com/404?fromUrl=/video/85937719415fc3cf",
@@ -13,5 +13,5 @@ test("downloadTargetUrl rejects hashed fake TikTok video urls before yt-dlp", ()
     hashtags: [],
   };
 
-  assert.throws(() => downloadTargetUrl(video), /does not have a valid TikTok video URL/);
+  assert.throws(() => downloadTargetUrl(video), /does not have a valid source video URL/);
 });

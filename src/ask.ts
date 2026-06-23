@@ -46,7 +46,7 @@ async function answerWithOllama(question: string, results: SearchResult[], optio
     })
     .join("\n\n");
   const prompt = [
-    "Answer the user's question using only the saved TikTok evidence below.",
+    "Answer the user's question using only the saved clip evidence below.",
     "Cite video ids in brackets when making claims. If evidence is thin, say so.",
     "",
     `Question: ${question}`,
