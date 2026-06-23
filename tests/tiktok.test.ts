@@ -43,7 +43,7 @@ test("extractItemsFromSuccessfulResponse reads wrapped collection item lists", (
   assert.equal(items[0]?.id, "7123456789012345678");
 });
 
-test("extractItemsFromSuccessfulResponse rejects TikTok error responses", () => {
+test("extractItemsFromSuccessfulResponse rejects source error responses", () => {
   assert.throws(
     () =>
       extractItemsFromSuccessfulResponse(
@@ -53,7 +53,7 @@ test("extractItemsFromSuccessfulResponse rejects TikTok error responses", () => 
         },
         "collection",
       ),
-    /TikTok collection fetch failed: Network error/,
+    /Source collection fetch failed: Network error/,
   );
 });
 

@@ -215,7 +215,7 @@ async function fetchCollectionWithCookie(idOrUrl: string, options: UnknownRecord
   if (!response.ok) {
     return {
       status: "error",
-      message: `TikTok returned HTTP ${response.status} ${response.statusText}`,
+      message: `Source returned HTTP ${response.status} ${response.statusText}`,
     };
   }
 
@@ -234,7 +234,7 @@ function assertSuccessfulResponse(response: unknown, source: TikTokSource): void
   const statusCode = numberValue(root.statusCode) ?? numberValue(root.status_code);
   if (status === "error" || (statusCode != null && statusCode !== 0)) {
     const message = stringValue(root.message) ?? stringValue(root.statusMsg) ?? stringValue(root.status_msg) ?? "unknown error";
-    throw new Error(`TikTok ${source} fetch failed: ${message}`);
+    throw new Error(`Source ${source} fetch failed: ${message}`);
   }
 }
 

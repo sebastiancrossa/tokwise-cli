@@ -87,7 +87,7 @@ export async function createCommand(name: string): Promise<string> {
     "",
     "## Steps",
     "",
-    "1. Search the local TikTok Theory archive when relevant.",
+    "1. Search the local Tokwise archive when relevant.",
     "2. Ground claims in video ids or Markdown pages.",
     "3. Report uncertainty clearly.",
     "",

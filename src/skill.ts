@@ -5,26 +5,27 @@ import path from "node:path";
 export function skillContent(): string {
   return [
     "---",
-    "name: tiktoktheory",
-    "description: Search and use the user's local TikTok Theory archive of saved TikTok transcripts.",
+    "name: tokwise",
+    "description: Search and use the user's local Tokwise archive of saved short-form video transcripts.",
     "---",
     "",
-    "# TikTok Theory",
+    "# Tokwise",
     "",
-    "Use this skill when the user asks about saved TikTok videos, life advice clips, transcript patterns, or similarities across saved TikToks.",
+    "Use this skill when the user asks about saved short-form videos, life advice clips, transcript patterns, or similarities across saved clips.",
     "",
     "## Commands",
     "",
-    "- `tt status` shows whether the archive exists and how many transcripts are available.",
-    "- `tt search \"query\" --limit 8` searches descriptions, hashtags, summaries, and transcripts.",
-    "- `tt show <id>` prints full metadata and transcript for one video.",
-    "- `tt similar <id>` finds related videos by transcript and metadata overlap.",
-    "- `tt ask \"question\"` returns top local evidence; add `--engine ollama --model <model>` only when the user wants local synthesis.",
-    "- `tt md` and `tt wiki` export Markdown pages under the local library.",
+    "- `tokwise status` shows whether the archive exists and how many transcripts are available.",
+    "- `tokwise search \"query\" --limit 8` searches descriptions, hashtags, summaries, and transcripts.",
+    "- `tokwise show <id>` prints full metadata and transcript for one video.",
+    "- `tokwise similar <id>` finds related videos by transcript and metadata overlap.",
+    "- `tokwise ask \"question\"` returns top local evidence; add `--engine ollama --model <model>` only when the user wants local synthesis.",
+    "- `tokwise md` and `tokwise wiki` export Markdown pages under the local library.",
+    "- `tw` is the short alias for `tokwise`.",
     "",
     "## Grounding",
     "",
-    "Cite TikTok video ids or Markdown page paths when drawing conclusions. Treat transcripts as user-owned local context and do not assume videos are public.",
+    "Cite video ids or Markdown page paths when drawing conclusions. Treat transcripts as user-owned local context and do not assume videos are public.",
     "",
   ].join("\n");
 }
@@ -32,10 +33,10 @@ export function skillContent(): string {
 export async function installSkill(target: "codex" | "claude" | "all" = "all"): Promise<string[]> {
   const destinations: string[] = [];
   if (target === "codex" || target === "all") {
-    destinations.push(path.join(os.homedir(), ".codex", "skills", "tiktoktheory", "SKILL.md"));
+    destinations.push(path.join(os.homedir(), ".codex", "skills", "tokwise", "SKILL.md"));
   }
   if (target === "claude" || target === "all") {
-    destinations.push(path.join(os.homedir(), ".claude", "skills", "tiktoktheory", "SKILL.md"));
+    destinations.push(path.join(os.homedir(), ".claude", "skills", "tokwise", "SKILL.md"));
   }
   for (const destination of destinations) {
     await fs.mkdir(path.dirname(destination), { recursive: true });
@@ -47,10 +48,10 @@ export async function installSkill(target: "codex" | "claude" | "all" = "all"): 
 export async function uninstallSkill(target: "codex" | "claude" | "all" = "all"): Promise<string[]> {
   const destinations: string[] = [];
   if (target === "codex" || target === "all") {
-    destinations.push(path.join(os.homedir(), ".codex", "skills", "tiktoktheory"));
+    destinations.push(path.join(os.homedir(), ".codex", "skills", "tokwise"));
   }
   if (target === "claude" || target === "all") {
-    destinations.push(path.join(os.homedir(), ".claude", "skills", "tiktoktheory"));
+    destinations.push(path.join(os.homedir(), ".claude", "skills", "tokwise"));
   }
   for (const destination of destinations) {
     await fs.rm(destination, { recursive: true, force: true });

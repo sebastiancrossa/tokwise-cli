@@ -27,7 +27,7 @@ export async function transcribeVideo(video: TikTokVideo, options: TranscribeOpt
     return { id: video.id, changed: false, transcript: video.transcript };
   }
   const input = video.media?.audioPath ?? video.media?.videoPath;
-  if (!input) throw new Error(`${video.id} has no downloaded audio or video. Run tt fetch-media --audio first.`);
+  if (!input) throw new Error(`${video.id} has no downloaded audio or video. Run tokwise fetch-media --audio first.`);
   const safeId = sanitizeFilePart(video.id);
   const outJson = path.join(transcriptDir(), `${safeId}.json`);
   const outText = path.join(transcriptDir(), `${safeId}.txt`);

@@ -76,7 +76,7 @@ export function downloadTargetUrl(video: TikTokVideo): string {
   const target = video.canonicalUrl ?? video.url;
   if (isMalformedTikTokVideoUrl(target)) {
     throw new Error(
-      `${video.id} does not have a valid TikTok video URL (${target}). Remove this malformed record or resync the source with the latest CLI.`,
+      `${video.id} does not have a valid source video URL (${target}). Remove this malformed record or resync the source with the latest CLI.`,
     );
   }
   return target;
