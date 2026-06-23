@@ -21,6 +21,13 @@ export interface DownloadOutcome {
   media: TikTokMedia;
 }
 
+// TikTok advertises aac on every format, but without yt-dlp impersonation its
+// HEVC (bytevc1) "best" formats download video-only. That breaks audio
+// extraction ("unable to obtain file audio codec") and yields silent videos.
+// h264 formats carry a real audio track, so prefer them and only fall back to
+// yt-dlp's default best when no h264 rendition exists.
+const PREFERRED_FORMAT = "b[vcodec^=h264]/b";
+
 export async function downloadMedia(video: TikTokVideo, options: DownloadOptions = {}): Promise<DownloadOutcome> {
   ensureDataDirs();
   const command = options.ytDlp ?? "yt-dlp";
@@ -35,6 +42,13 @@ export async function downloadMedia(video: TikTokVideo, options: DownloadOptions
   const args = [
     "--no-playlist",
     "--restrict-filenames",
+    // Redownload instead of reusing a leftover intermediate. A prior failed
+    // audio extraction can leave a video-only <id>.mp4 behind; yt-dlp would
+    // otherwise treat it as "already downloaded" and keep failing to extract
+    // audio from that stale file on every subsequent run.
+    "--force-overwrites",
+    "-f",
+    PREFERRED_FORMAT,
     "--print",
     "after_move:filepath",
     "-o",
