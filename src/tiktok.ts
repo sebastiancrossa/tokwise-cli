@@ -24,13 +24,19 @@ async function loadApi(): Promise<UnknownRecord> {
 }
 
 export async function fetchCollection(idOrUrl: string, options: TikTokFetchOptions): Promise<TikTokVideo[]> {
+  const context = {
+    source: "collection",
+    collectionId: inferCollectionId(idOrUrl),
+    collectionUrl: looksLikeUrl(idOrUrl) ? idOrUrl : undefined,
+  } satisfies SourceContext;
+
+  if (options.cookie) {
+    return fetchPaged(fetchCollectionWithCookie, idOrUrl, options, context);
+  }
+
   const api = await loadApi();
   const fn = requireFunction(api, "Collection");
-  return fetchPaged(fn, idOrUrl, options, {
-    source: "collection",
-    collectionId: inferTrailingId(idOrUrl),
-    collectionUrl: looksLikeUrl(idOrUrl) ? idOrUrl : undefined,
-  });
+  return fetchPaged(fn, idOrUrl, options, context);
 }
 
 export async function fetchPlaylist(idOrUrl: string, options: TikTokFetchOptions): Promise<TikTokVideo[]> {
@@ -135,7 +141,7 @@ async function fetchPaged(
       cookie: options.cookie,
       proxy: options.proxy,
     });
-    const items = extractItems(response);
+    const items = extractItemsFromSuccessfulResponse(response, context.source);
     videos.push(...items.map((item) => normalizeVideo(item, context)));
     if (!hasMore(response) || items.length === 0) break;
     page += 1;
@@ -152,16 +158,102 @@ function requireFunction(api: UnknownRecord, name: string): (arg: string, option
   return value as (arg: string, options: UnknownRecord) => Promise<unknown>;
 }
 
+async function fetchCollectionWithCookie(idOrUrl: string, options: UnknownRecord): Promise<unknown> {
+  const collectionId = inferCollectionId(idOrUrl);
+  if (!collectionId) {
+    return {
+      status: "error",
+      message: "Invalid collection ID or URL format",
+    };
+  }
+  const page = numberValue(options.page) ?? 1;
+  const count = numberValue(options.count) ?? 30;
+  const cursor = Math.max(0, page - 1) * count;
+  const params = new URLSearchParams({
+    WebIdLastTime: String(Date.now()),
+    aid: "1988",
+    app_language: "en",
+    app_name: "tiktok_web",
+    browser_language: "en-US",
+    browser_name: "Mozilla",
+    browser_online: "true",
+    browser_platform: "MacIntel",
+    browser_version:
+      "5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    channel: "tiktok_web",
+    collectionId,
+    cookie_enabled: "true",
+    count: String(count),
+    cursor: String(cursor),
+    device_platform: "web_pc",
+    focus_state: "true",
+    from_page: "user",
+    history_len: "3",
+    is_fullscreen: "false",
+    is_page_visible: "true",
+    language: "en",
+    os: "mac",
+    referer: looksLikeUrl(idOrUrl) ? idOrUrl : "",
+    sourceType: "113",
+    tz_name: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    user_is_login: "true",
+    webcast_language: "en",
+  });
+
+  const response = await fetch(`https://www.tiktok.com/api/collection/item_list/?${params.toString()}`, {
+    method: "GET",
+    headers: {
+      "user-agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+      accept: "application/json, text/plain, */*",
+      "accept-language": "en-US,en;q=0.9",
+      cookie: String(options.cookie ?? ""),
+      referer: looksLikeUrl(idOrUrl) ? idOrUrl : "https://www.tiktok.com/",
+    },
+  });
+
+  if (!response.ok) {
+    return {
+      status: "error",
+      message: `TikTok returned HTTP ${response.status} ${response.statusText}`,
+    };
+  }
+
+  return response.json() as Promise<unknown>;
+}
+
+export function extractItemsFromSuccessfulResponse(response: unknown, source: TikTokSource): UnknownRecord[] {
+  assertSuccessfulResponse(response, source);
+  return extractItems(response).filter(isLikelyVideoItem);
+}
+
+function assertSuccessfulResponse(response: unknown, source: TikTokSource): void {
+  const root = asRecord(response);
+  if (!root) return;
+  const status = stringValue(root.status);
+  const statusCode = numberValue(root.statusCode) ?? numberValue(root.status_code);
+  if (status === "error" || (statusCode != null && statusCode !== 0)) {
+    const message = stringValue(root.message) ?? stringValue(root.statusMsg) ?? stringValue(root.status_msg) ?? "unknown error";
+    throw new Error(`TikTok ${source} fetch failed: ${message}`);
+  }
+}
+
 function extractItems(response: unknown): UnknownRecord[] {
   const root = asRecord(response);
   if (!root) return [];
   const result = asRecord(root.result);
   const candidates = [
     root.itemList,
+    root.collectionItemList,
+    root.item_list,
+    root.aweme_list,
     root.items,
     root.videos,
     root.result,
     result?.itemList,
+    result?.collectionItemList,
+    result?.item_list,
+    result?.aweme_list,
     result?.items,
     result?.videos,
   ];
@@ -170,6 +262,13 @@ function extractItems(response: unknown): UnknownRecord[] {
   }
   if (result) return [result];
   return [root];
+}
+
+function isLikelyVideoItem(item: UnknownRecord): boolean {
+  const id = stringValue(item.id) ?? stringValue(item.awemeId) ?? stringValue(item.aweme_id);
+  if (id && /^\d{8,}$/.test(id)) return true;
+  const url = stringValue(item.url) ?? stringValue(item.shareUrl);
+  return Boolean(inferVideoId(url));
 }
 
 function hasMore(response: unknown): boolean {
@@ -313,6 +412,11 @@ function toIsoTime(value: unknown): string | undefined {
 function inferTrailingId(input: string): string | undefined {
   const match = input.match(/(\d{8,})(?:\D*)$/);
   return match?.[1];
+}
+
+function inferCollectionId(input: string): string | undefined {
+  if (/^\d+$/.test(input.trim())) return input.trim();
+  return input.match(/collection\/[^/\-]*-?(\d+)/i)?.[1] ?? inferTrailingId(input);
 }
 
 function inferVideoId(input: string | undefined): string | undefined {

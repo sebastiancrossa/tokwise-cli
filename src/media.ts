@@ -48,7 +48,7 @@ export async function downloadMedia(video: TikTokVideo, options: DownloadOptions
   } else {
     args.push("--write-info-json");
   }
-  args.push(video.canonicalUrl ?? video.url);
+  args.push(downloadTargetUrl(video));
 
   const result = await runProcess(command, args);
   if (result.code !== 0) {
@@ -70,6 +70,23 @@ export async function downloadMedia(video: TikTokVideo, options: DownloadOptions
     if (infoPath) nextMedia.infoJsonPath = infoPath;
   }
   return { id: video.id, changed: true, media: nextMedia };
+}
+
+export function downloadTargetUrl(video: TikTokVideo): string {
+  const target = video.canonicalUrl ?? video.url;
+  if (isMalformedTikTokVideoUrl(target)) {
+    throw new Error(
+      `${video.id} does not have a valid TikTok video URL (${target}). Remove this malformed record or resync the source with the latest CLI.`,
+    );
+  }
+  return target;
+}
+
+function isMalformedTikTokVideoUrl(url: string): boolean {
+  if (!/https?:\/\/(?:www\.)?tiktok\.com\//i.test(url)) return false;
+  if (/\/404(?:[/?#]|$)/i.test(url)) return true;
+  const videoMatch = url.match(/\/video\/([^/?#]+)/i);
+  return Boolean(videoMatch && !/^\d{8,}$/.test(videoMatch[1] ?? ""));
 }
 
 async function listFiles(dir: string): Promise<string[]> {
