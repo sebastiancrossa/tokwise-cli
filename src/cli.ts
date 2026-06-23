@@ -494,46 +494,77 @@ export function buildCli(): Command {
 
 async function runDownloads(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof downloadMedia>[1]): Promise<TikTokVideo[]> {
   const next = [...videos];
-  let done = 0;
+  const total = next.filter((video) => touched.has(video.id)).length;
+  let processed = 0;
+  let downloaded = 0;
+  let present = 0;
+  const failed: string[] = [];
   for (const [idx, video] of next.entries()) {
     if (!touched.has(video.id)) continue;
-    const outcome = await downloadMedia(video, options);
-    next[idx] = { ...video, media: outcome.media };
-    if (outcome.changed) done += 1;
-    console.error(`media ${done}/${touched.size}: ${video.id}`);
+    processed += 1;
+    try {
+      const outcome = await downloadMedia(video, options);
+      next[idx] = { ...video, media: outcome.media };
+      if (outcome.changed) downloaded += 1;
+      else present += 1;
+      console.error(`media ${processed}/${total}: ${video.id} (${outcome.changed ? "downloaded" : "already present"})`);
+    } catch (error) {
+      failed.push(video.id);
+      console.error(`media ${processed}/${total}: ${video.id} (failed: ${(error as Error).message})`);
+    }
   }
   await saveVideos(next);
-  console.log(`Media updated for ${done} videos.`);
+  console.log(`Media: ${downloaded} downloaded, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
 }
 
 async function runTranscription(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof transcribeVideo>[1]): Promise<TikTokVideo[]> {
   const next = [...videos];
-  let done = 0;
+  const total = next.filter((video) => touched.has(video.id)).length;
+  let processed = 0;
+  let transcribed = 0;
+  let present = 0;
+  const failed: string[] = [];
   for (const [idx, video] of next.entries()) {
     if (!touched.has(video.id)) continue;
-    const outcome = await transcribeVideo(video, options);
-    if (outcome.transcript) next[idx] = { ...video, transcript: outcome.transcript };
-    if (outcome.changed) done += 1;
-    console.error(`transcribe ${done}/${touched.size}: ${video.id}`);
+    processed += 1;
+    try {
+      const outcome = await transcribeVideo(video, options);
+      if (outcome.transcript) next[idx] = { ...video, transcript: outcome.transcript };
+      if (outcome.changed) transcribed += 1;
+      else present += 1;
+      console.error(`transcribe ${processed}/${total}: ${video.id} (${outcome.changed ? "transcribed" : "already present"})`);
+    } catch (error) {
+      failed.push(video.id);
+      console.error(`transcribe ${processed}/${total}: ${video.id} (failed: ${(error as Error).message})`);
+    }
   }
   await saveVideos(next);
-  console.log(`Transcribed ${done} videos.`);
+  console.log(`Transcripts: ${transcribed} transcribed, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
 }
 
 async function runClassification(videos: TikTokVideo[], touched: Set<string>, options: { engine?: "regex" | "ollama"; model?: string; ollamaBaseUrl?: string }): Promise<TikTokVideo[]> {
   const next = [...videos];
-  let done = 0;
+  const total = next.filter((video) => touched.has(video.id)).length;
+  let processed = 0;
+  let classified = 0;
+  const failed: string[] = [];
   for (const [idx, video] of next.entries()) {
     if (!touched.has(video.id)) continue;
-    const classification = await classifyOne(video, options);
-    next[idx] = { ...video, classification };
-    done += 1;
-    console.error(`classify ${done}/${touched.size}: ${video.id}`);
+    processed += 1;
+    try {
+      const classification = await classifyOne(video, options);
+      next[idx] = { ...video, classification };
+      classified += 1;
+      console.error(`classify ${processed}/${total}: ${video.id}`);
+    } catch (error) {
+      failed.push(video.id);
+      console.error(`classify ${processed}/${total}: ${video.id} (failed: ${(error as Error).message})`);
+    }
   }
   await saveVideos(next);
-  console.log(`Classified ${done} videos.`);
+  console.log(`Classified ${classified} videos${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
 }
 
