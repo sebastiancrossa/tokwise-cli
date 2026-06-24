@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractItemsFromSuccessfulResponse, normalizeVideo, videosFromUrls } from "../src/tiktok.js";
+import {
+  extractItemsFromSuccessfulResponse,
+  extractUsernameFromRehydrationHtml,
+  normalizeCollectionInput,
+  normalizeVideo,
+  videosFromUrls,
+} from "../src/tiktok.js";
 
 test("normalizeVideo maps collection response fields", () => {
   const video = normalizeVideo(
@@ -69,4 +75,60 @@ test("extractItemsFromSuccessfulResponse does not treat response wrappers as vid
   );
 
   assert.deepEqual(items, []);
+});
+
+test("normalizeCollectionInput keeps a full URL as-is", () => {
+  const result = normalizeCollectionInput("https://www.tiktok.com/@user/collection/name-123");
+  assert.equal(result.collectionUrl, "https://www.tiktok.com/@user/collection/name-123");
+  assert.equal(result.collectionId, "123");
+  assert.equal(result.username, "user");
+});
+
+test("normalizeCollectionInput expands an @user/collection/slug path", () => {
+  const result = normalizeCollectionInput("@user/collection/name-123");
+  assert.equal(result.collectionUrl, "https://www.tiktok.com/@user/collection/name-123");
+  assert.equal(result.collectionId, "123");
+  assert.equal(result.username, "user");
+});
+
+test("normalizeCollectionInput builds a URL from a bare slug using the fallback username", () => {
+  const result = normalizeCollectionInput("name-123", "coach");
+  assert.equal(result.collectionUrl, "https://www.tiktok.com/@coach/collection/name-123");
+  assert.equal(result.collectionId, "123");
+  assert.equal(result.username, "coach");
+});
+
+test("normalizeCollectionInput falls back to id-only when no username is known", () => {
+  const result = normalizeCollectionInput("name-7300000000000000001");
+  assert.equal(result.collectionUrl, undefined);
+  assert.equal(result.collectionId, "7300000000000000001");
+  assert.equal(result.username, undefined);
+});
+
+test("normalizeCollectionInput passes a pure numeric id through without a URL", () => {
+  const result = normalizeCollectionInput("7300000000000000001", "coach");
+  assert.equal(result.collectionUrl, undefined);
+  assert.equal(result.collectionId, "7300000000000000001");
+});
+
+test("extractUsernameFromRehydrationHtml reads the logged-in uniqueId", () => {
+  const data = {
+    __DEFAULT_SCOPE__: {
+      "webapp.app-context": {
+        user: { uniqueId: "coach" },
+      },
+    },
+  };
+  const html = `<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify(data)}</script></html>`;
+  assert.equal(extractUsernameFromRehydrationHtml(html), "coach");
+});
+
+test("extractUsernameFromRehydrationHtml returns undefined for malformed html", () => {
+  assert.equal(extractUsernameFromRehydrationHtml("<html><body>no data here</body></html>"), undefined);
+  assert.equal(
+    extractUsernameFromRehydrationHtml(
+      '<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">not json</script>',
+    ),
+    undefined,
+  );
 });

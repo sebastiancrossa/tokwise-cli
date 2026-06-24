@@ -13,7 +13,7 @@ import { commandsDir, dataDir, ensureDataDirs, libraryDir, searchIndexPath, toDi
 import { compileWiki, exportMarkdown, lintWiki } from "./markdown.js";
 import { downloadMedia } from "./media.js";
 import { formatSearchResults, loadSearchIndex, saveSearchIndex, searchWithIndex } from "./search.js";
-import { fetchCollection, fetchLiked, fetchPlaylist, fetchSingleUrl, fetchUserPosts, fetchVideoSearch, videosFromImport, videosFromUrls } from "./tiktok.js";
+import { detectLoggedInUsername, fetchCollection, fetchLiked, fetchPlaylist, fetchSingleUrl, fetchUserPosts, fetchVideoSearch, videosFromImport, videosFromUrls } from "./tiktok.js";
 import { transcribeVideo, type SttEngine } from "./transcribe.js";
 import type { SearchFilters, TikTokSource, TikTokVideo } from "./types.js";
 import { createCommand, createLibraryPage, deleteLibraryPage, listCommands, searchLibrary, showLibraryPage, updateLibraryPage, validateCommands } from "./library.js";
@@ -80,13 +80,20 @@ export function buildCli(): Command {
         .description("Save a browser cookie locally")
         .option("--cookie <cookie>", "Cookie string")
         .option("--stdin", "Read cookie from stdin")
+        .option("--username <handle>", "TikTok @handle tied to this cookie")
         .action(
           safe(async (options) => {
             const cookie = options.stdin ? (await readTextInput("-")).trim() : options.cookie;
             if (!cookie) throw new Error("Pass --cookie or --stdin.");
             ensureDataDirs();
-            await saveAuth({ cookie, source: "manual", updatedAt: new Date().toISOString() });
-            console.log("Saved browser cookie locally.");
+            const existing = await loadAuth();
+            const username = options.username ?? (await detectLoggedInUsername(cookie)) ?? existing.username;
+            await saveAuth({ ...existing, cookie, username, source: "manual", updatedAt: new Date().toISOString() });
+            console.log(
+              username
+                ? `Saved browser cookie locally (username: @${username}).`
+                : "Saved browser cookie locally. Run `tw auth set-username <handle>` to enable bare collection slugs.",
+            );
           }),
         ),
     )
@@ -95,6 +102,7 @@ export function buildCli(): Command {
         .description("Extract the TikTok cookie from a logged-in macOS Chromium browser")
         .option("--browser <name>", `Browser to read from (${SUPPORTED_BROWSERS.join(", ")}); auto-detected if omitted`)
         .option("--profile <name>", "Browser profile directory", "Default")
+        .option("--username <handle>", "TikTok @handle tied to this cookie")
         .option("--print", "Print the cookie header instead of saving it")
         .action(
           safe(async (options) => {
@@ -109,14 +117,20 @@ export function buildCli(): Command {
               return;
             }
             ensureDataDirs();
+            const existing = await loadAuth();
+            const username = options.username ?? (await detectLoggedInUsername(extracted.cookie)) ?? existing.username;
             await saveAuth({
+              ...existing,
               cookie: extracted.cookie,
+              username,
               source: "browser",
               browser: extracted.browser,
               profile: extracted.profile,
               updatedAt: new Date().toISOString(),
             });
-            console.log(`Saved cookie from ${extracted.browser} (profile "${extracted.profile}").`);
+            console.log(
+              `Saved cookie from ${extracted.browser} (profile "${extracted.profile}")${username ? ` for @${username}` : ""}.`,
+            );
           }),
         ),
     )
@@ -136,14 +150,19 @@ export function buildCli(): Command {
               console.warn("Warning: extracted cookie has no sessionid; the session may be incomplete or logged out.");
             }
             ensureDataDirs();
+            const username = (await detectLoggedInUsername(extracted.cookie)) ?? auth.username;
             await saveAuth({
+              ...auth,
               cookie: extracted.cookie,
+              username,
               source: "browser",
               browser: extracted.browser,
               profile: extracted.profile,
               updatedAt: new Date().toISOString(),
             });
-            console.log(`Refreshed cookie from ${extracted.browser} (profile "${extracted.profile}").`);
+            console.log(
+              `Refreshed cookie from ${extracted.browser} (profile "${extracted.profile}")${username ? ` for @${username}` : ""}.`,
+            );
           }),
         ),
     )
@@ -159,9 +178,25 @@ export function buildCli(): Command {
             auth.source === "browser"
               ? `browser (${auth.browser ?? "unknown"}/${auth.profile ?? "Default"})`
               : "manual";
-          console.log(`Cookie saved (${auth.cookie.length} chars, source: ${source}).`);
+          const username = auth.username ? `, username: @${auth.username}` : "";
+          console.log(`Cookie saved (${auth.cookie.length} chars, source: ${source}${username}).`);
         }),
       ),
+    )
+    .addCommand(
+      new Command("set-username")
+        .description("Save the TikTok @handle tied to your cookie (enables bare collection slugs)")
+        .argument("<handle>", "TikTok username, with or without a leading @")
+        .action(
+          safe(async (handle: string) => {
+            const username = handle.trim().replace(/^@/, "");
+            if (!username) throw new Error("Pass a TikTok handle.");
+            ensureDataDirs();
+            const existing = await loadAuth();
+            await saveAuth({ ...existing, username, updatedAt: new Date().toISOString() });
+            console.log(`Saved username @${username}.`);
+          }),
+        ),
     )
     .addCommand(
       new Command("clear").description("Remove saved browser cookie").action(
@@ -175,7 +210,7 @@ export function buildCli(): Command {
   program
     .command("sync")
     .description("Sync short-form video sources into the local archive")
-    .option("--collection <idOrUrl>", "Collection id or URL", collect, [])
+    .option("--collection <idOrUrl>", "Collection URL, @user/collection/slug, or bare slug/id", collect, [])
     .option("--playlist <idOrUrl>", "Playlist id or URL", collect, [])
     .option("--liked <username>", "Sync a user's liked videos; usually requires cookie", collect, [])
     .option("--user <username>", "Sync a user's posts", collect, [])
@@ -208,9 +243,11 @@ export function buildCli(): Command {
       safe(async (options) => {
         ensureDataDirs();
         const cookie = await loadCookie({ cookie: options.cookie, cookieFile: options.cookieFile });
+        const auth = await loadAuth();
         const discovered: TikTokVideo[] = [];
         const fetchOptions = {
           cookie,
+          username: auth.username,
           proxy: options.proxy as string | undefined,
           limit: Number(options.limit),
           page: Number(options.page),
