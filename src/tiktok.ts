@@ -3,6 +3,7 @@ import { stableHash, uniqueStrings } from "./store.js";
 
 interface TikTokFetchOptions {
   cookie?: string;
+  username?: string;
   proxy?: string;
   limit?: number;
   page?: number;
@@ -24,19 +25,26 @@ async function loadApi(): Promise<UnknownRecord> {
 }
 
 export async function fetchCollection(idOrUrl: string, options: TikTokFetchOptions): Promise<TikTokVideo[]> {
+  const normalized = normalizeCollectionInput(idOrUrl, options.username);
+  if (!normalized.collectionId && !normalized.collectionUrl) {
+    throw new Error(
+      `Cannot resolve collection "${idOrUrl}". Use a full URL, @user/collection/slug, or run \`tw auth set-username <handle>\`.`,
+    );
+  }
+  const resolved = normalized.collectionUrl ?? normalized.collectionId ?? idOrUrl;
   const context = {
     source: "collection",
-    collectionId: inferCollectionId(idOrUrl),
-    collectionUrl: looksLikeUrl(idOrUrl) ? idOrUrl : undefined,
+    collectionId: normalized.collectionId,
+    collectionUrl: normalized.collectionUrl,
   } satisfies SourceContext;
 
   if (options.cookie) {
-    return fetchPaged(fetchCollectionWithCookie, idOrUrl, options, context);
+    return fetchPaged(fetchCollectionWithCookie, resolved, options, context);
   }
 
   const api = await loadApi();
   const fn = requireFunction(api, "Collection");
-  return fetchPaged(fn, idOrUrl, options, context);
+  return fetchPaged(fn, resolved, options, context);
 }
 
 export async function fetchPlaylist(idOrUrl: string, options: TikTokFetchOptions): Promise<TikTokVideo[]> {
@@ -220,6 +228,40 @@ async function fetchCollectionWithCookie(idOrUrl: string, options: UnknownRecord
   }
 
   return response.json() as Promise<unknown>;
+}
+
+export function extractUsernameFromRehydrationHtml(html: string): string | undefined {
+  const match = html.match(/__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)<\/script>/s);
+  if (!match || !match[1]) return undefined;
+  try {
+    const data = asRecord(JSON.parse(match[1]));
+    const scope = asRecord(data?.["__DEFAULT_SCOPE__"]);
+    const appContext = asRecord(scope?.["webapp.app-context"]);
+    const user = asRecord(appContext?.user);
+    return stringValue(user?.uniqueId);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function detectLoggedInUsername(cookie: string, proxy?: string): Promise<string | undefined> {
+  if (!cookie) return undefined;
+  try {
+    const response = await fetch("https://www.tiktok.com/", {
+      method: "GET",
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+        cookie,
+      },
+    });
+    if (!response.ok) return undefined;
+    return extractUsernameFromRehydrationHtml(await response.text());
+  } catch {
+    return undefined;
+  }
 }
 
 export function extractItemsFromSuccessfulResponse(response: unknown, source: TikTokSource): UnknownRecord[] {
@@ -417,6 +459,23 @@ function inferTrailingId(input: string): string | undefined {
 function inferCollectionId(input: string): string | undefined {
   if (/^\d+$/.test(input.trim())) return input.trim();
   return input.match(/collection\/[^/\-]*-?(\d+)/i)?.[1] ?? inferTrailingId(input);
+}
+
+export interface NormalizedCollection {
+  collectionId?: string;
+  collectionUrl?: string;
+  username?: string;
+}
+
+export function normalizeCollectionInput(input: string, fallbackUsername?: string): NormalizedCollection {
+  const value = input.trim();
+  let url: string | undefined;
+  if (/^https?:\/\//i.test(value)) url = value;
+  else if (/^(www\.)?tiktok\.com\/@/i.test(value)) url = `https://${value}`;
+  else if (/^@[^/]+\/collection\//i.test(value)) url = `https://www.tiktok.com/${value}`;
+  else if (fallbackUsername && !/^\d+$/.test(value)) url = `https://www.tiktok.com/@${fallbackUsername}/collection/${value}`;
+  const collectionId = inferCollectionId(url ?? value);
+  return { collectionId, collectionUrl: url, username: inferUsername(url) ?? fallbackUsername };
 }
 
 function inferVideoId(input: string | undefined): string | undefined {

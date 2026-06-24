@@ -37,8 +37,12 @@ tokwise auth refresh                 # re-pull later when the session goes stale
 # Or paste a cookie manually (works everywhere).
 tokwise auth set --cookie "YOUR_COOKIE"
 
+# Tokwise tries to detect the @handle tied to your cookie. Set it manually if needed.
+tokwise auth set-username your-handle
+
 # Sync a collection, download audio, transcribe, classify, and index.
-tokwise sync --collection "https://www.tiktok.com/@user/collection/name-123" \
+# --collection accepts a full URL, an @user/collection/slug path, or a bare slug.
+tokwise sync --collection "name-123" \
   --limit 200 \
   --download --audio \
   --transcribe --stt-engine whisper --stt-model base \
@@ -119,7 +123,7 @@ Legacy `TT_*` environment variables and `~/.tiktoktheory` are still read so exis
 ## Sources
 
 ```bash
-tokwise sync --collection <collection-id-or-url>
+tokwise sync --collection <url | @user/collection/slug | slug-or-id>
 tokwise sync --playlist <playlist-id-or-url>
 tokwise sync --liked <username>
 tokwise sync --user <username>
@@ -128,6 +132,16 @@ tokwise sync --url "https://www.tiktok.com/@user/video/123"
 tokwise sync --urls-file urls.txt
 tokwise sync --input export.jsonl
 ```
+
+`--collection` accepts three forms, from most to least explicit:
+
+```bash
+tokwise sync --collection "https://www.tiktok.com/@user/collection/name-123"
+tokwise sync --collection "@user/collection/name-123"
+tokwise sync --collection "name-123"   # uses the @handle saved with your cookie
+```
+
+The bare-slug form needs the username tied to your cookie. Tokwise tries to detect it automatically when you run `tokwise auth set` or `tokwise auth from-browser`; you can also set it explicitly with `tokwise auth set-username <handle>` or `--username` on those commands. `tokwise auth show` reports the saved handle.
 
 Private collections usually require a fresh browser cookie from a logged-in session. On macOS, `tokwise auth from-browser` reads and decrypts it straight from a logged-in Chromium browser (Chrome, Brave, Edge, Arc, or Chromium) via the macOS Keychain, and `tokwise auth refresh` re-pulls it when the session goes stale. On other platforms or browsers, paste it manually with `tokwise auth set`. Cookies are stored locally only (`auth.json`, chmod 600).
 
