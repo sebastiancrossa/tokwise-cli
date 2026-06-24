@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import type { SearchDocument, SearchFilters, SearchIndex, SearchResult, TikTokVideo } from "./types.js";
 import { searchIndexPath } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./jsonl.js";
+import { c } from "./render.js";
 
 const STOP_WORDS = new Set([
   "a",
@@ -209,17 +210,17 @@ function highlights(video: TikTokVideo, terms: string[]): string[] {
 
 export function formatSearchResults(results: SearchResult[], options?: { json?: boolean }): string {
   if (options?.json) return JSON.stringify(results, null, 2);
-  if (results.length === 0) return "No matches.";
+  if (results.length === 0) return c.muted("No matches.");
   return results
     .map((result, idx) => {
       const video = result.video;
-      const author = video.author?.username ? `@${video.author.username}` : "unknown";
-      const category = video.classification?.category ? ` [${video.classification.category}]` : "";
-      const score = result.score > 0 ? ` score ${result.score.toFixed(2)}` : "";
-      const line = `${idx + 1}. ${video.id} ${author}${category}${score}`;
+      const author = video.author?.username ? c.accent(`@${video.author.username}`) : c.muted("unknown");
+      const category = video.classification?.category ? ` ${c.warn(`[${video.classification.category}]`)}` : "";
+      const score = result.score > 0 ? ` ${c.muted(`score ${result.score.toFixed(2)}`)}` : "";
+      const line = `${c.muted(`${idx + 1}.`)} ${c.value(video.id)} ${author}${category}${score}`;
       const desc = video.description ? `   ${video.description.replace(/\s+/g, " ").slice(0, 160)}` : "";
-      const hit = result.highlights[0] ? `   > ${result.highlights[0]}` : "";
-      return [line, desc, hit, `   ${video.canonicalUrl ?? video.url}`].filter(Boolean).join("\n");
+      const hit = result.highlights[0] ? `   ${c.muted(">")} ${c.success(result.highlights[0])}` : "";
+      return [line, desc, hit, `   ${c.muted(video.canonicalUrl ?? video.url)}`].filter(Boolean).join("\n");
     })
     .join("\n\n");
 }
