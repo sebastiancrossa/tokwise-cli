@@ -18,6 +18,8 @@ import { transcribeVideo, type SttEngine } from "./transcribe.js";
 import type { SearchFilters, TikTokSource, TikTokVideo } from "./types.js";
 import { createCommand, createLibraryPage, deleteLibraryPage, listCommands, searchLibrary, showLibraryPage, updateLibraryPage, validateCommands } from "./library.js";
 import { installSkill, skillContent, uninstallSkill } from "./skill.js";
+import { barChart, box, c, kvList, setColorEnabled, truncate } from "./render.js";
+import { createProgress } from "./progress.js";
 
 const require = createRequire(import.meta.url);
 
@@ -70,7 +72,12 @@ export function buildCli(): Command {
     .name("tokwise")
     .description("Local-first CLI for saved short-form videos, transcripts, search, and agent workflows.")
     .version(version())
+    .option("--no-color", "Disable colored output")
     .showHelpAfterError();
+
+  program.hook("preAction", (thisCommand) => {
+    if (thisCommand.opts().color === false) setColorEnabled(false);
+  });
 
   program
     .command("auth")
@@ -386,6 +393,7 @@ export function buildCli(): Command {
     .option("--json", "JSON output", false)
     .action(
       safe(async (query, options) => {
+        if (options.json) setColorEnabled(false);
         const { videos, index } = await requireIndex();
         const results = searchWithIndex(videos, index, { ...filtersFromOptions(options), query });
         console.log(formatSearchResults(results, { json: options.json }));
@@ -409,6 +417,7 @@ export function buildCli(): Command {
     .option("--json", "JSON output", false)
     .action(
       safe(async (options) => {
+        if (options.json) setColorEnabled(false);
         const { videos, index } = await requireIndex();
         const results = searchWithIndex(videos, index, filtersFromOptions(options));
         if (options.json) console.log(JSON.stringify(results.map((result) => result.video), null, 2));
@@ -423,6 +432,7 @@ export function buildCli(): Command {
     .option("--json", "JSON output", false)
     .action(
       safe(async (idOrUrl, options) => {
+        if (options.json) setColorEnabled(false);
         const video = findVideo(await loadVideos(), idOrUrl);
         if (!video) throw new Error(`No video found for ${idOrUrl}.`);
         console.log(options.json ? JSON.stringify(video, null, 2) : formatVideo(video));
@@ -584,11 +594,13 @@ export function buildCli(): Command {
   addSkillCommands(program);
 
   program.command("paths").description("Show data paths").option("--json", "JSON output", false).action(safe(async (options) => {
+    if (options.json) setColorEnabled(false);
     const paths = { dataDir: dataDir(), videos: videosJsonlPath(), index: searchIndexPath(), library: libraryDir(), commands: commandsDir() };
-    console.log(options.json ? JSON.stringify(paths, null, 2) : Object.entries(paths).map(([key, value]) => `${key}: ${toDisplayPath(value)}`).join("\n"));
+    console.log(options.json ? JSON.stringify(paths, null, 2) : kvList(Object.entries(paths).map(([key, value]) => [key, c.muted(toDisplayPath(value) ?? "")])));
   }));
   program.command("path").description("Print data directory").action(() => console.log(dataDir()));
   program.command("status").description("Show archive status").option("--json", "JSON output", false).action(safe(async (options) => {
+    if (options.json) setColorEnabled(false);
     const videos = await loadVideos();
     const status = {
       videos: videos.length,
@@ -607,24 +619,24 @@ export function buildCli(): Command {
 async function runDownloads(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof downloadMedia>[1]): Promise<TikTokVideo[]> {
   const next = [...videos];
   const total = next.filter((video) => touched.has(video.id)).length;
-  let processed = 0;
+  const progress = createProgress({ total, label: "media" });
   let downloaded = 0;
   let present = 0;
   const failed: string[] = [];
   for (const [idx, video] of next.entries()) {
     if (!touched.has(video.id)) continue;
-    processed += 1;
     try {
       const outcome = await downloadMedia(video, options);
       next[idx] = { ...video, media: outcome.media };
       if (outcome.changed) downloaded += 1;
       else present += 1;
-      console.error(`media ${processed}/${total}: ${video.id} (${outcome.changed ? "downloaded" : "already present"})`);
+      progress.tick(`${video.id} (${outcome.changed ? "downloaded" : "already present"})`);
     } catch (error) {
       failed.push(video.id);
-      console.error(`media ${processed}/${total}: ${video.id} (failed: ${(error as Error).message})`);
+      progress.fail(`${video.id} (failed: ${(error as Error).message})`);
     }
   }
+  progress.done();
   await saveVideos(next);
   console.log(`Media: ${downloaded} downloaded, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
@@ -633,24 +645,24 @@ async function runDownloads(videos: TikTokVideo[], touched: Set<string>, options
 async function runTranscription(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof transcribeVideo>[1]): Promise<TikTokVideo[]> {
   const next = [...videos];
   const total = next.filter((video) => touched.has(video.id)).length;
-  let processed = 0;
+  const progress = createProgress({ total, label: "transcribe" });
   let transcribed = 0;
   let present = 0;
   const failed: string[] = [];
   for (const [idx, video] of next.entries()) {
     if (!touched.has(video.id)) continue;
-    processed += 1;
     try {
       const outcome = await transcribeVideo(video, options);
       if (outcome.transcript) next[idx] = { ...video, transcript: outcome.transcript };
       if (outcome.changed) transcribed += 1;
       else present += 1;
-      console.error(`transcribe ${processed}/${total}: ${video.id} (${outcome.changed ? "transcribed" : "already present"})`);
+      progress.tick(`${video.id} (${outcome.changed ? "transcribed" : "already present"})`);
     } catch (error) {
       failed.push(video.id);
-      console.error(`transcribe ${processed}/${total}: ${video.id} (failed: ${(error as Error).message})`);
+      progress.fail(`${video.id} (failed: ${(error as Error).message})`);
     }
   }
+  progress.done();
   await saveVideos(next);
   console.log(`Transcripts: ${transcribed} transcribed, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
@@ -659,22 +671,22 @@ async function runTranscription(videos: TikTokVideo[], touched: Set<string>, opt
 async function runClassification(videos: TikTokVideo[], touched: Set<string>, options: { engine?: "regex" | "ollama"; model?: string; ollamaBaseUrl?: string }): Promise<TikTokVideo[]> {
   const next = [...videos];
   const total = next.filter((video) => touched.has(video.id)).length;
-  let processed = 0;
+  const progress = createProgress({ total, label: "classify" });
   let classified = 0;
   const failed: string[] = [];
   for (const [idx, video] of next.entries()) {
     if (!touched.has(video.id)) continue;
-    processed += 1;
     try {
       const classification = await classifyOne(video, options);
       next[idx] = { ...video, classification };
       classified += 1;
-      console.error(`classify ${processed}/${total}: ${video.id}`);
+      progress.tick(video.id);
     } catch (error) {
       failed.push(video.id);
-      console.error(`classify ${processed}/${total}: ${video.id} (failed: ${(error as Error).message})`);
+      progress.fail(`${video.id} (failed: ${(error as Error).message})`);
     }
   }
+  progress.done();
   await saveVideos(next);
   console.log(`Classified ${classified} videos${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
@@ -721,82 +733,93 @@ function filtersFromOptions(options: Record<string, unknown>): SearchFilters {
 }
 
 function formatList(videos: TikTokVideo[]): string {
-  if (videos.length === 0) return "No videos.";
+  if (videos.length === 0) return c.muted("No videos.");
   return videos
     .map((video) => {
-      const category = video.classification?.category ? ` [${video.classification.category}]` : "";
-      const transcript = video.transcript?.text ? " transcript" : "";
-      return `${video.id} ${video.author?.username ? `@${video.author.username}` : "unknown"}${category}${transcript}\n  ${(video.description ?? "").replace(/\s+/g, " ").slice(0, 160)}\n  ${video.canonicalUrl ?? video.url}`;
+      const author = video.author?.username ? c.accent(`@${video.author.username}`) : c.muted("unknown");
+      const category = video.classification?.category ? ` ${c.warn(`[${video.classification.category}]`)}` : "";
+      const transcript = video.transcript?.text ? ` ${c.success("transcript")}` : "";
+      const desc = truncate((video.description ?? "").replace(/\s+/g, " "), 160);
+      return [
+        `${c.value(video.id)} ${author}${category}${transcript}`,
+        `  ${desc}`,
+        `  ${c.muted(video.canonicalUrl ?? video.url)}`,
+      ].join("\n");
     })
     .join("\n\n");
 }
 
 function formatVideo(video: TikTokVideo): string {
   return [
-    `${video.id} ${video.author?.username ? `@${video.author.username}` : ""}`,
-    video.canonicalUrl ?? video.url,
+    `${c.value(video.id)} ${video.author?.username ? c.accent(`@${video.author.username}`) : ""}`.trimEnd(),
+    c.muted(video.canonicalUrl ?? video.url),
     "",
     video.description ?? "",
     "",
-    `Category: ${video.classification?.category ?? "uncategorized"}`,
-    `Domain: ${video.classification?.domain ?? "general"}`,
-    `Topics: ${(video.classification?.topics ?? []).join(", ") || "none"}`,
-    `Media: ${toDisplayPath(video.media?.audioPath ?? video.media?.videoPath) ?? "not downloaded"}`,
+    kvList([
+      ["Category", c.value(video.classification?.category ?? "uncategorized")],
+      ["Domain", c.value(video.classification?.domain ?? "general")],
+      ["Topics", (video.classification?.topics ?? []).join(", ") || c.muted("none")],
+      ["Media", toDisplayPath(video.media?.audioPath ?? video.media?.videoPath) ?? c.muted("not downloaded")],
+    ]),
     "",
-    "Transcript:",
-    video.transcript?.text ?? "No transcript yet.",
+    c.heading("Transcript"),
+    video.transcript?.text ?? c.muted("No transcript yet."),
   ].join("\n");
 }
 
-function formatStats(videos: TikTokVideo[]): string {
+function archiveSummaryLines(videos: TikTokVideo[]): string[] {
   const transcriptCount = videos.filter((video) => video.transcript?.text).length;
   const classifiedCount = videos.filter((video) => video.classification?.category).length;
-  const dates = videos.flatMap((video) => (video.createdAt ? [video.createdAt] : []));
+  const dates = videos.flatMap((video) => (video.createdAt ? [video.createdAt] : [])).sort();
+  const dot = c.muted("\u00b7");
+  const counts =
+    `${c.value(String(videos.length))} videos ${dot} ` +
+    `${c.value(String(transcriptCount))} transcripts ${c.muted(`(${percent(transcriptCount, videos.length)})`)} ${dot} ` +
+    `${c.value(String(classifiedCount))} classified ${c.muted(`(${percent(classifiedCount, videos.length)})`)}`;
+  const range = dates.length
+    ? `${c.label("Range")} ${formatDate(dates[0])} ${c.muted("\u2192")} ${formatDate(dates.at(-1))}`
+    : `${c.label("Range")} ${c.muted("unknown")}`;
+  return [counts, range];
+}
+
+function formatStats(videos: TikTokVideo[]): string {
   const authors = countBy(videos, (video) => video.author?.username ?? "unknown");
   return [
-    `${videos.length} videos`,
-    `${transcriptCount} transcripts (${percent(transcriptCount, videos.length)})`,
-    `${classifiedCount} classified (${percent(classifiedCount, videos.length)})`,
-    dates.length ? `Date range: ${dates.sort()[0]} to ${dates.sort().at(-1)}` : "Date range: unknown",
+    box("Tokwise", archiveSummaryLines(videos)),
     "",
-    "Top authors:",
-    formatCountMap(authors, 10),
+    c.heading("Top authors"),
+    barChart([...authors.entries()], { limit: 10 }),
   ].join("\n");
 }
 
 function formatViz(videos: TikTokVideo[]): string {
+  const authors = countBy(videos, (video) => video.author?.username ?? "unknown");
+  const categories = countBy(videos, (video) => video.classification?.category ?? "uncategorized");
+  const domains = countBy(videos, (video) => video.classification?.domain ?? "general");
   return [
-    "Tokwise",
+    box("Tokwise", archiveSummaryLines(videos)),
     "",
-    formatStats(videos),
+    c.heading("Top authors"),
+    barChart([...authors.entries()], { limit: 10 }),
     "",
-    "Categories:",
-    formatBars(countBy(videos, (video) => video.classification?.category ?? "uncategorized")),
+    c.heading("Categories"),
+    barChart([...categories.entries()], { limit: 12 }),
     "",
-    "Domains:",
-    formatBars(countBy(videos, (video) => video.classification?.domain ?? "general")),
+    c.heading("Domains"),
+    barChart([...domains.entries()], { limit: 12 }),
   ].join("\n");
 }
 
 function formatCounts(videos: TikTokVideo[], keyFn: (video: TikTokVideo) => string): string {
-  return formatCountMap(countBy(videos, keyFn), 50);
+  return barChart([...countBy(videos, keyFn).entries()], { limit: 50 });
 }
 
-function formatBars(counts: Map<string, number>): string {
-  const max = Math.max(1, ...counts.values());
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 12)
-    .map(([key, count]) => `${key.padEnd(22)} ${"#".repeat(Math.max(1, Math.round((count / max) * 24)))} ${count}`)
-    .join("\n");
-}
-
-function formatCountMap(counts: Map<string, number>, limit: number): string {
-  return [...counts.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([key, count]) => `${key}: ${count}`)
-    .join("\n");
+function formatDate(iso: string | undefined): string {
+  if (!iso) return "unknown";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
 function countBy(videos: TikTokVideo[], keyFn: (video: TikTokVideo) => string): Map<string, number> {
@@ -809,14 +832,14 @@ function countBy(videos: TikTokVideo[], keyFn: (video: TikTokVideo) => string): 
 }
 
 function formatStatus(status: { videos: number; transcripts: number; classified: number; dataDir: string; libraryDir: string; indexExists: boolean }): string {
-  return [
-    `${status.videos} videos`,
-    `${status.transcripts} transcripts`,
-    `${status.classified} classified`,
-    `Index: ${status.indexExists ? "ready" : "missing"}`,
-    `Data: ${toDisplayPath(status.dataDir)}`,
-    `Library: ${toDisplayPath(status.libraryDir)}`,
-  ].join("\n");
+  return kvList([
+    ["Videos", c.value(String(status.videos))],
+    ["Transcripts", c.value(String(status.transcripts))],
+    ["Classified", c.value(String(status.classified))],
+    ["Index", status.indexExists ? c.success("ready") : c.warn("missing")],
+    ["Data", c.muted(toDisplayPath(status.dataDir) ?? "")],
+    ["Library", c.muted(toDisplayPath(status.libraryDir) ?? "")],
+  ]);
 }
 
 function addLibraryCommands(program: Command): void {
@@ -906,7 +929,7 @@ async function showDashboard(): Promise<void> {
   ensureDataDirs();
   const videos = await loadVideos();
   console.log([
-    `Tokwise CLI v${version()}`,
+    box(`Tokwise CLI v${version()}`, archiveSummaryLines(videos)),
     "",
     formatStatus({
       videos: videos.length,
@@ -917,8 +940,8 @@ async function showDashboard(): Promise<void> {
       indexExists: await fileExists(searchIndexPath()),
     }),
     "",
-    "Next: tokwise sync --collection <url> --download --audio --transcribe --classify",
-    "Explore: tokwise search \"life advice\" | tokwise viz | tokwise wiki",
+    `${c.muted("Next")}    tokwise sync --collection <url> --download --audio --transcribe --classify`,
+    `${c.muted("Explore")} tokwise search "life advice" ${c.muted("|")} tokwise viz ${c.muted("|")} tokwise wiki`,
   ].join("\n"));
 }
 
