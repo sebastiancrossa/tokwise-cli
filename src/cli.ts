@@ -75,8 +75,9 @@ export function buildCli(): Command {
     .option("--no-color", "Disable colored output")
     .showHelpAfterError();
 
-  program.hook("preAction", (thisCommand) => {
+  program.hook("preAction", (thisCommand, actionCommand) => {
     if (thisCommand.opts().color === false) setColorEnabled(false);
+    if (actionCommand.opts().json !== true) console.log("");
   });
 
   program
@@ -929,6 +930,7 @@ async function showDashboard(): Promise<void> {
   ensureDataDirs();
   const videos = await loadVideos();
   console.log([
+    "",
     box(`Tokwise CLI v${version()}`, archiveSummaryLines(videos)),
     "",
     formatStatus({
