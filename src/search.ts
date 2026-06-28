@@ -3,6 +3,7 @@ import type { SearchDocument, SearchFilters, SearchIndex, SearchResult, TikTokVi
 import { searchIndexPath } from "./paths.js";
 import { readJsonFile, writeJsonFile } from "./jsonl.js";
 import { c } from "./render.js";
+import { formatReference } from "./reference.js";
 
 const STOP_WORDS = new Set([
   "a",
@@ -214,10 +215,9 @@ export function formatSearchResults(results: SearchResult[], options?: { json?: 
   return results
     .map((result, idx) => {
       const video = result.video;
-      const author = video.author?.username ? c.accent(`@${video.author.username}`) : c.muted("unknown");
       const category = video.classification?.category ? ` ${c.warn(`[${video.classification.category}]`)}` : "";
       const score = result.score > 0 ? ` ${c.muted(`score ${result.score.toFixed(2)}`)}` : "";
-      const line = `${c.muted(`${idx + 1}.`)} ${c.value(video.id)} ${author}${category}${score}`;
+      const line = `${c.muted(`${idx + 1}.`)} ${formatReference(video)}${category}${score}`;
       const desc = video.description ? `   ${video.description.replace(/\s+/g, " ").slice(0, 160)}` : "";
       const hit = result.highlights[0] ? `   ${c.muted(">")} ${c.success(result.highlights[0])}` : "";
       return [line, desc, hit, `   ${c.muted(video.canonicalUrl ?? video.url)}`].filter(Boolean).join("\n");
