@@ -10,6 +10,7 @@ import {
   markdownVideosDir,
 } from "./paths.js";
 import { sanitizeFilePart } from "./store.js";
+import { videoTitle } from "./reference.js";
 
 export interface MarkdownExportResult {
   written: number;
@@ -67,7 +68,7 @@ export function videoMarkdownPath(video: TikTokVideo): string {
 }
 
 export function renderVideoMarkdown(video: TikTokVideo): string {
-  const title = video.description?.split(/\r?\n/)[0]?.slice(0, 80) || `Clip ${video.id}`;
+  const title = videoTitle(video);
   const category = video.classification?.category ?? "uncategorized";
   const domain = video.classification?.domain ?? "general";
   const topics = video.classification?.topics ?? [];
@@ -181,10 +182,6 @@ function renderGroupPage(kind: string, name: string, videos: TikTokVideo[]): str
     ...videos.map((video) => `- [[videos/${sanitizeFilePart(video.id)}|${videoTitle(video)}]]`),
     "",
   ].join("\n");
-}
-
-function videoTitle(video: TikTokVideo): string {
-  return video.description?.replace(/\s+/g, " ").slice(0, 80) || video.id;
 }
 
 function groupBy<T>(items: T[], keyFn: (item: T) => string): Map<string, T[]> {

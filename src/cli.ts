@@ -19,6 +19,7 @@ import type { SearchFilters, TikTokSource, TikTokVideo } from "./types.js";
 import { createCommand, createLibraryPage, deleteLibraryPage, listCommands, searchLibrary, showLibraryPage, updateLibraryPage, validateCommands } from "./library.js";
 import { installSkill, skillContent, uninstallSkill } from "./skill.js";
 import { barChart, box, c, kvList, setColorEnabled, truncate } from "./render.js";
+import { formatReference } from "./reference.js";
 import { createProgress } from "./progress.js";
 
 const require = createRequire(import.meta.url);
@@ -737,12 +738,11 @@ function formatList(videos: TikTokVideo[]): string {
   if (videos.length === 0) return c.muted("No videos.");
   return videos
     .map((video) => {
-      const author = video.author?.username ? c.accent(`@${video.author.username}`) : c.muted("unknown");
       const category = video.classification?.category ? ` ${c.warn(`[${video.classification.category}]`)}` : "";
       const transcript = video.transcript?.text ? ` ${c.success("transcript")}` : "";
       const desc = truncate((video.description ?? "").replace(/\s+/g, " "), 160);
       return [
-        `${c.value(video.id)} ${author}${category}${transcript}`,
+        `${formatReference(video)}${category}${transcript}`,
         `  ${desc}`,
         `  ${c.muted(video.canonicalUrl ?? video.url)}`,
       ].join("\n");
@@ -752,7 +752,7 @@ function formatList(videos: TikTokVideo[]): string {
 
 function formatVideo(video: TikTokVideo): string {
   return [
-    `${c.value(video.id)} ${video.author?.username ? c.accent(`@${video.author.username}`) : ""}`.trimEnd(),
+    formatReference(video),
     c.muted(video.canonicalUrl ?? video.url),
     "",
     video.description ?? "",

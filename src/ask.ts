@@ -1,4 +1,5 @@
 import type { SearchResult } from "./types.js";
+import { videoReference } from "./reference.js";
 
 export interface AskOptions {
   engine?: "extractive" | "ollama";
@@ -20,9 +21,8 @@ function answerExtractively(question: string, results: SearchResult[]): string {
     "",
     ...results.slice(0, 8).map((result, idx) => {
       const video = result.video;
-      const author = video.author?.username ? `@${video.author.username}` : "unknown";
       const summary = video.classification?.summary ?? result.highlights[0] ?? video.description ?? "No text.";
-      return `${idx + 1}. ${video.id} ${author}\n   ${summary}\n   ${video.canonicalUrl ?? video.url}`;
+      return `${idx + 1}. ${videoReference(video)}\n   ${summary}\n   ${video.canonicalUrl ?? video.url}`;
     }),
     "",
     "Use --engine ollama --model <model> for a synthesized answer from a local model.",
@@ -37,8 +37,8 @@ async function answerWithOllama(question: string, results: SearchResult[], optio
     .map((result, idx) => {
       const video = result.video;
       return [
-        `[${idx + 1}] ${video.id} ${video.canonicalUrl ?? video.url}`,
-        `Author: ${video.author?.username ?? "unknown"}`,
+        `[${idx + 1}] ${videoReference(video)}`,
+        `Source: ${video.canonicalUrl ?? video.url}`,
         `Category: ${video.classification?.category ?? "unknown"}`,
         `Summary: ${video.classification?.summary ?? ""}`,
         `Transcript: ${(video.transcript?.text ?? video.description ?? "").slice(0, 2500)}`,
@@ -47,7 +47,7 @@ async function answerWithOllama(question: string, results: SearchResult[], optio
     .join("\n\n");
   const prompt = [
     "Answer the user's question using only the saved clip evidence below.",
-    "Cite video ids in brackets when making claims. If evidence is thin, say so.",
+    "Cite clips by their readable reference (e.g. @author \u00b7 Mon YYYY \u2014 \"title\") when making claims. If evidence is thin, say so.",
     "",
     `Question: ${question}`,
     "",

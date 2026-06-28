@@ -107,7 +107,8 @@ export function findVideo(videos: TikTokVideo[], query: string): TikTokVideo | u
   return (
     videos.find((video) => video.id === normalized) ??
     videos.find((video) => video.id.startsWith(normalized)) ??
-    videos.find((video) => video.url === normalized || video.canonicalUrl === normalized)
+    videos.find((video) => video.url === normalized || video.canonicalUrl === normalized) ??
+    videos.find((video) => video.id.endsWith(normalized))
   );
 }
 
