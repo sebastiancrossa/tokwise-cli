@@ -64,3 +64,80 @@ export function createProgress(options: { total: number; label: string }): Progr
     },
   };
 }
+
+const DEFAULT_SPINNER_MESSAGES = [
+  "Thinking",
+  "Pondering",
+  "Rummaging through your bookmarks",
+  "Connecting the dots",
+  "Cogitating",
+  "Synthesizing",
+  "Consulting the archive",
+  "Musing",
+  "Distilling insights",
+];
+
+const MESSAGE_INTERVAL_MS = 2500;
+
+export interface Spinner {
+  start(): void;
+  stop(): void;
+}
+
+export function createSpinner(options: { messages?: string[]; messageIntervalMs?: number } = {}): Spinner {
+  const messages = options.messages ?? DEFAULT_SPINNER_MESSAGES;
+  const messageIntervalMs = options.messageIntervalMs ?? MESSAGE_INTERVAL_MS;
+  const stream = process.stderr;
+  const tty = Boolean(stream.isTTY);
+  let running = false;
+  let frame = 0;
+  let messageIndex = 0;
+  let startedAt = 0;
+  let frameTimer: NodeJS.Timeout | undefined;
+  let messageTimer: NodeJS.Timeout | undefined;
+
+  function draw(): void {
+    const elapsedSec = Math.floor((Date.now() - startedAt) / 1000);
+    const spinner = c.accent(FRAMES[frame % FRAMES.length] ?? "");
+    const message = messages[messageIndex % messages.length] ?? "Thinking";
+    stream.write(`${CLEAR_LINE}${spinner} ${message}\u2026 ${c.muted(`(${elapsedSec}s)`)}`);
+  }
+
+  function clearTimers(): void {
+    if (frameTimer) {
+      clearInterval(frameTimer);
+      frameTimer = undefined;
+    }
+    if (messageTimer) {
+      clearInterval(messageTimer);
+      messageTimer = undefined;
+    }
+  }
+
+  return {
+    start(): void {
+      if (running || !tty) return;
+      running = true;
+      startedAt = Date.now();
+      frame = 0;
+      messageIndex = 0;
+      draw();
+      frameTimer = setInterval(() => {
+        frame += 1;
+        draw();
+      }, FRAME_INTERVAL_MS);
+      frameTimer.unref();
+      messageTimer = setInterval(() => {
+        messageIndex += 1;
+        draw();
+      }, messageIntervalMs);
+      messageTimer.unref();
+    },
+    stop(): void {
+      if (!running) return;
+      running = false;
+      clearTimers();
+      if (tty) stream.write(CLEAR_LINE);
+    },
+  };
+}
