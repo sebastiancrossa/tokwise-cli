@@ -4,9 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { runProcess } from "./process.js";
 
-export type ChromiumBrowser = "chrome" | "brave" | "edge" | "arc" | "chromium";
+export type ChromiumBrowser = "chrome" | "brave" | "edge" | "arc" | "dia" | "chromium";
 
-export const SUPPORTED_BROWSERS: ChromiumBrowser[] = ["chrome", "brave", "edge", "arc", "chromium"];
+export const SUPPORTED_BROWSERS: ChromiumBrowser[] = ["chrome", "brave", "edge", "arc", "dia", "chromium"];
 
 interface ChannelConfig {
   dir: string;
@@ -19,6 +19,7 @@ const CHANNELS: Record<ChromiumBrowser, ChannelConfig> = {
   brave: { dir: "BraveSoftware/Brave-Browser", service: "Brave Safe Storage", account: "Brave" },
   edge: { dir: "Microsoft Edge", service: "Microsoft Edge Safe Storage", account: "Microsoft Edge" },
   arc: { dir: "Arc/User Data", service: "Arc Safe Storage", account: "Arc" },
+  dia: { dir: "Dia/User Data", service: "Dia Safe Storage", account: "Dia" },
   chromium: { dir: "Chromium", service: "Chromium Safe Storage", account: "Chromium" },
 };
 

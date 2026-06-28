@@ -43,7 +43,7 @@ npm link
 ```bash
 # Optional: save a browser cookie for private collections or liked videos.
 # Easiest on macOS: pull it straight from a logged-in Chromium browser.
-tokwise auth from-browser            # auto-detects Chrome, Brave, Edge, Arc, or Chromium
+tokwise auth from-browser            # auto-detects Chrome, Brave, Edge, Arc, Dia, or Chromium
 tokwise auth refresh                 # re-pull later when the session goes stale
 
 # Or paste a cookie manually (works everywhere).
@@ -155,7 +155,7 @@ tokwise sync --collection "name-123"   # uses the @handle saved with your cookie
 
 The bare-slug form needs the username tied to your cookie. Tokwise tries to detect it automatically when you run `tokwise auth set` or `tokwise auth from-browser`; you can also set it explicitly with `tokwise auth set-username <handle>` or `--username` on those commands. `tokwise auth show` reports the saved handle.
 
-Private collections usually require a fresh browser cookie from a logged-in session. On macOS, `tokwise auth from-browser` reads and decrypts it straight from a logged-in Chromium browser (Chrome, Brave, Edge, Arc, or Chromium) via the macOS Keychain, and `tokwise auth refresh` re-pulls it when the session goes stale. On other platforms or browsers, paste it manually with `tokwise auth set`. Cookies are stored locally only (`auth.json`, chmod 600).
+Private collections usually require a fresh browser cookie from a logged-in session. On macOS, `tokwise auth from-browser` reads and decrypts it straight from a logged-in Chromium browser (Chrome, Brave, Edge, Arc, Dia, or Chromium) via the macOS Keychain, and `tokwise auth refresh` re-pulls it when the session goes stale. On other platforms or browsers, paste it manually with `tokwise auth set`. Cookies are stored locally only (`auth.json`, chmod 600).
 
 ## Transcription
 

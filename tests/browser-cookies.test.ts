@@ -74,6 +74,16 @@ test("chromiumTargets resolves cookie DB path and keychain identity", () => {
   assert.equal(target.keychainAccount, "Brave");
 });
 
+test("chromiumTargets resolves Dia's User Data path and keychain identity", () => {
+  const target = chromiumTargets("dia", "Default");
+  assert.equal(
+    target.cookieDbPath,
+    path.join(os.homedir(), "Library", "Application Support", "Dia", "User Data", "Default", "Cookies"),
+  );
+  assert.equal(target.keychainService, "Dia Safe Storage");
+  assert.equal(target.keychainAccount, "Dia");
+});
+
 test("chromiumTargets honors a non-default profile for chrome", () => {
   const target = chromiumTargets("chrome", "Profile 1");
   assert.equal(
