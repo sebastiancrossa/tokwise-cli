@@ -23,7 +23,7 @@ import { createCommand, createLibraryPage, deleteLibraryPage, listCommands, sear
 import { installSkill, skillContent, uninstallSkill } from "./skill.js";
 import { barChart, box, c, kvList, setColorEnabled, table, truncate } from "./render.js";
 import { formatReference } from "./reference.js";
-import { createProgress } from "./progress.js";
+import { createProgress, createSpinner } from "./progress.js";
 
 const require = createRequire(import.meta.url);
 
@@ -548,12 +548,27 @@ export function buildCli(): Command {
         const prefs = await loadPreferences();
         const { videos, index } = await requireIndex();
         const results = searchWithIndex(videos, index, { query: question, limit: Number(options.limit) });
-        const answer = await answerQuestion(question, results, {
-          engine: options.engine ?? prefs.askEngine ?? "extractive",
-          model: options.model ?? prefs.model,
-          ollamaBaseUrl: options.ollamaUrl ?? prefs.ollamaBaseUrl,
-        });
-        console.log(answer);
+        const engine = options.engine ?? prefs.askEngine ?? "extractive";
+        const spinner = engine === "ollama" ? createSpinner() : undefined;
+        spinner?.start();
+        let streamed = false;
+        let answer: string;
+        try {
+          answer = await answerQuestion(question, results, {
+            engine,
+            model: options.model ?? prefs.model,
+            ollamaBaseUrl: options.ollamaUrl ?? prefs.ollamaBaseUrl,
+            onFirstToken: () => spinner?.stop(),
+            onToken: (chunk) => {
+              streamed = true;
+              process.stdout.write(chunk);
+            },
+          });
+        } finally {
+          spinner?.stop();
+        }
+        if (streamed) process.stdout.write("\n");
+        else console.log(answer);
         if (options.save) {
           const file = path.join(libraryDir(), "answers", `${Date.now()}-${slug(question)}.md`);
           await fs.mkdir(path.dirname(file), { recursive: true });
