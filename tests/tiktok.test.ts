@@ -1,8 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  extractCollectionListEntries,
   extractItemsFromSuccessfulResponse,
+  extractSecUidFromRehydrationHtml,
   extractUsernameFromRehydrationHtml,
+  normalizeBookmarkFolder,
   normalizeCollectionInput,
   normalizeVideo,
   videosFromUrls,
@@ -131,4 +134,62 @@ test("extractUsernameFromRehydrationHtml returns undefined for malformed html", 
     ),
     undefined,
   );
+});
+
+test("extractSecUidFromRehydrationHtml reads the logged-in app-context secUid", () => {
+  const data = {
+    __DEFAULT_SCOPE__: {
+      "webapp.app-context": { user: { uniqueId: "coach", secUid: "MS4wLjABAAAAhome" } },
+    },
+  };
+  const html = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify(data)}</script>`;
+  assert.equal(extractSecUidFromRehydrationHtml(html), "MS4wLjABAAAAhome");
+});
+
+test("extractSecUidFromRehydrationHtml falls back to the user-detail scope", () => {
+  const data = {
+    __DEFAULT_SCOPE__: {
+      "webapp.user-detail": { userInfo: { user: { secUid: "MS4wLjABAAAAprofile" } } },
+    },
+  };
+  const html = `<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify(data)}</script>`;
+  assert.equal(extractSecUidFromRehydrationHtml(html), "MS4wLjABAAAAprofile");
+});
+
+test("extractCollectionListEntries reads a root-level collectionList", () => {
+  const entries = extractCollectionListEntries({
+    statusCode: 0,
+    collectionList: [{ id: "1", name: "Career" }],
+    hasMore: false,
+  });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.name, "Career");
+});
+
+test("extractCollectionListEntries reads a result-wrapped collection_list", () => {
+  const entries = extractCollectionListEntries({
+    status: "success",
+    result: { collection_list: [{ collectionId: "9", name: "Cooking" }] },
+  });
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.collectionId, "9");
+});
+
+test("normalizeBookmarkFolder maps fields and builds a url from the username", () => {
+  const folder = normalizeBookmarkFolder({ id: "123", name: "Startup ideas", total: 18 }, "coach");
+  assert.equal(folder?.id, "123");
+  assert.equal(folder?.name, "Startup ideas");
+  assert.equal(folder?.itemCount, 18);
+  assert.equal(folder?.kind, "collection");
+  assert.equal(folder?.url, "https://www.tiktok.com/@coach/collection/startup-ideas-123");
+});
+
+test("normalizeBookmarkFolder tags the Favorites bucket", () => {
+  const folder = normalizeBookmarkFolder({ collectionId: "7", name: "Favorites", itemCount: 4 });
+  assert.equal(folder?.kind, "favorites");
+  assert.equal(folder?.url, undefined);
+});
+
+test("normalizeBookmarkFolder skips entries without an id", () => {
+  assert.equal(normalizeBookmarkFolder({ name: "No id" }), undefined);
 });

@@ -52,7 +52,12 @@ tokwise auth set --cookie "YOUR_COOKIE"
 # Tokwise tries to detect the @handle tied to your cookie. Set it manually if needed.
 tokwise auth set-username your-handle
 
-# Sync a collection, download audio, transcribe, classify, and index.
+# Easiest start: run sync with no source. Tokwise pulls your TikTok bookmarks
+# (Collections + Favorites), shows an interactive checklist, then asks what to do
+# with the ones you pick (download / transcribe / classify).
+tokwise sync
+
+# Or target a specific collection directly.
 # --collection accepts a full URL, an @user/collection/slug path, or a bare slug.
 tokwise sync --collection "name-123" \
   --limit 200 \
@@ -132,9 +137,50 @@ export TOKWISE_COMMANDS_DIR=/path/to/commands
 
 Legacy `TT_*` environment variables and `~/.tiktoktheory` are still read so existing local archives keep working after the rename.
 
+## Interactive sync
+
+Run `tokwise sync` with no source flags to discover and pick your bookmarks:
+
+```bash
+tokwise sync                  # checklist of your Collections + Favorites, then a pipeline checklist
+tokwise sync --download --classify   # skip the pipeline prompt; apply these to whatever you pick
+```
+
+Requires a saved cookie (`tokwise auth from-browser`). Tokwise resolves your
+`secUid` once and caches it. The pipeline checklist pre-checks Download and
+Transcribe only when `yt-dlp` / Whisper are installed; Classify is always on.
+
+When you pick more than one bookmark, sync runs and reports progress per
+collection (each with its own download / transcribe / classify status) and
+builds the search index once at the end.
+
+For scripts and agents, the same discovery is non-interactive:
+
+```bash
+tokwise sync --list           # print discovered bookmarks as a table
+tokwise sync --list --json    # machine-readable: id, name, itemCount, url, kind
+tokwise sync --all            # sync every bookmark without prompting
+```
+
+When `tokwise sync` runs without an interactive terminal and no flags, it prints
+the bookmark list plus a hint and exits without syncing.
+
+### Rate limits
+
+TikTok rate-limits rapid requests. Tokwise paces calls and retries on HTTP 429
+(and 5xx) with exponential backoff, honoring any `Retry-After` header. If a
+collection still fails after retries, it is skipped and reported at the end so
+the collections that did sync are kept.
+
+```bash
+tokwise sync --request-delay 1500   # ms between requests (default 500); raise if you still hit 429s
+tokwise sync --max-retries 5        # retries per request on 429/5xx (default 3)
+```
+
 ## Sources
 
 ```bash
+tokwise sync                  # interactive: pick from your bookmarks
 tokwise sync --collection <url | @user/collection/slug | slug-or-id>
 tokwise sync --playlist <playlist-id-or-url>
 tokwise sync --liked <username>

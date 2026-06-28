@@ -46,6 +46,17 @@ export interface TikTokCollectionRef {
   source: TikTokSource;
 }
 
+export type BookmarkFolderKind = "collection" | "favorites";
+
+export interface BookmarkFolder {
+  id: string;
+  name: string;
+  url?: string;
+  itemCount?: number;
+  cover?: string;
+  kind: BookmarkFolderKind;
+}
+
 export interface TikTokMedia {
   videoUrl?: string;
   downloadUrl?: string;

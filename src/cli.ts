@@ -7,18 +7,21 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { answerQuestion } from "./ask.js";
 import { classifyOne } from "./classify.js";
-import { clearAuth, findVideo, loadAuth, loadCookie, loadPreferences, loadVideos, mergeVideos, readTextInput, saveAuth, savePreferences, saveVideos } from "./store.js";
+import { clearAuth, findVideo, loadAuth, loadCookie, loadPreferences, loadVideos, mergeVideos, readTextInput, saveAuth, savePreferences, saveVideos, type SavedAuth } from "./store.js";
 import { extractTikTokCookie, isChromiumBrowser, SUPPORTED_BROWSERS, type ChromiumBrowser } from "./browser-cookies.js";
 import { commandsDir, dataDir, ensureDataDirs, libraryDir, searchIndexPath, toDisplayPath, videosJsonlPath } from "./paths.js";
 import { compileWiki, exportMarkdown, lintWiki } from "./markdown.js";
 import { downloadMedia } from "./media.js";
 import { formatSearchResults, loadSearchIndex, saveSearchIndex, searchWithIndex } from "./search.js";
-import { detectLoggedInUsername, fetchCollection, fetchLiked, fetchPlaylist, fetchSingleUrl, fetchUserPosts, fetchVideoSearch, videosFromImport, videosFromUrls } from "./tiktok.js";
+import { detectLoggedInUsername, fetchBookmarkFolders, fetchCollection, fetchLiked, fetchPlaylist, fetchSingleUrl, fetchUserPosts, fetchVideoSearch, resolveSecUid, videosFromImport, videosFromUrls } from "./tiktok.js";
 import { transcribeVideo, type SttEngine } from "./transcribe.js";
-import type { SearchFilters, TikTokSource, TikTokVideo } from "./types.js";
+import type { BookmarkFolder, SearchFilters, TikTokSource, TikTokVideo } from "./types.js";
+import { detectEngines } from "./engines.js";
+import { sleep } from "./http.js";
+import { cancelled, intro, isInteractive, promptFolderSelection, promptPipelineSelection } from "./interactive.js";
 import { createCommand, createLibraryPage, deleteLibraryPage, listCommands, searchLibrary, showLibraryPage, updateLibraryPage, validateCommands } from "./library.js";
 import { installSkill, skillContent, uninstallSkill } from "./skill.js";
-import { barChart, box, c, kvList, setColorEnabled, truncate } from "./render.js";
+import { barChart, box, c, kvList, setColorEnabled, table, truncate } from "./render.js";
 import { formatReference } from "./reference.js";
 import { createProgress } from "./progress.js";
 
@@ -219,6 +222,9 @@ export function buildCli(): Command {
   program
     .command("sync")
     .description("Sync short-form video sources into the local archive")
+    .option("--list", "List discovered bookmarks instead of syncing", false)
+    .option("--json", "With --list, print bookmarks as JSON", false)
+    .option("--all", "Sync every discovered bookmark without prompting", false)
     .option("--collection <idOrUrl>", "Collection URL, @user/collection/slug, or bare slug/id", collect, [])
     .option("--playlist <idOrUrl>", "Playlist id or URL", collect, [])
     .option("--liked <username>", "Sync a user's liked videos; usually requires cookie", collect, [])
@@ -233,6 +239,8 @@ export function buildCli(): Command {
     .option("--limit <n>", "Max items per source", parseNumber, 30)
     .option("--page <n>", "Start page", parseNumber, 1)
     .option("--pages <n>", "Max pages per paged source", parseNumber)
+    .option("--request-delay <ms>", "Delay between API requests to avoid rate limits", parseNumber, 500)
+    .option("--max-retries <n>", "Retries per request on rate limit (429) or server errors", parseNumber, 3)
     .option("--rebuild", "Replace archive with this sync result", false)
     .option("--download", "Download media after syncing", false)
     .option("--audio", "When downloading, extract audio only", false)
@@ -253,14 +261,23 @@ export function buildCli(): Command {
         ensureDataDirs();
         const cookie = await loadCookie({ cookie: options.cookie, cookieFile: options.cookieFile });
         const auth = await loadAuth();
+
+        if (!hasExplicitSource(options)) {
+          await runInteractiveSync(options, cookie, auth);
+          return;
+        }
+
         const discovered: TikTokVideo[] = [];
         const fetchOptions = {
           cookie,
           username: auth.username,
+          secUid: auth.secUid,
           proxy: options.proxy as string | undefined,
           limit: Number(options.limit),
           page: Number(options.page),
           pages: options.pages == null ? undefined : Number(options.pages),
+          requestDelayMs: Number(options.requestDelay),
+          maxRetries: Number(options.maxRetries),
         };
 
         for (const value of options.collection as string[]) discovered.push(...(await fetchCollection(value, fetchOptions)));
@@ -283,37 +300,7 @@ export function buildCli(): Command {
         }
 
         if (discovered.length === 0) throw new Error("No source supplied. Try --collection, --url, --urls-file, or --input.");
-        const sync = await mergeVideos(discovered, { rebuild: Boolean(options.rebuild) });
-        console.log(`Synced ${sync.added} new, ${sync.updated} updated, ${sync.unchanged} unchanged (${sync.total} total).`);
-
-        let videos = await loadVideos();
-        const touched = new Set(sync.ids);
-        if (options.download) {
-          videos = await runDownloads(videos, touched, {
-            ytDlp: options.ytDlp,
-            proxy: options.proxy,
-            cookiesFile: options.ytDlpCookies,
-            cookiesFromBrowser: options.cookiesFromBrowser,
-            audioOnly: Boolean(options.audio),
-          });
-        }
-        if (options.transcribe) {
-          videos = await runTranscription(videos, touched, {
-            engine: options.sttEngine as SttEngine,
-            command: options.sttCommand,
-            model: options.sttModel,
-            language: options.language,
-          });
-        }
-        if (options.classify) {
-          videos = await runClassification(videos, touched, {
-            engine: options.engine,
-            model: options.model,
-            ollamaBaseUrl: options.ollamaUrl,
-          });
-        }
-        const index = await saveSearchIndex(videos);
-        console.log(`Indexed ${index.recordCount} videos at ${toDisplayPath(searchIndexPath())}.`);
+        await runSyncPipeline([{ label: "sync", videos: discovered }], options);
       }),
     );
 
@@ -618,10 +605,14 @@ export function buildCli(): Command {
   return program;
 }
 
-async function runDownloads(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof downloadMedia>[1]): Promise<TikTokVideo[]> {
+export function progressLabel(base: string, label?: string): string {
+  return label ? `${base} \u00b7 ${label}` : base;
+}
+
+async function runDownloads(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof downloadMedia>[1], label?: string): Promise<TikTokVideo[]> {
   const next = [...videos];
   const total = next.filter((video) => touched.has(video.id)).length;
-  const progress = createProgress({ total, label: "media" });
+  const progress = createProgress({ total, label: progressLabel("media", label) });
   let downloaded = 0;
   let present = 0;
   const failed: string[] = [];
@@ -640,14 +631,15 @@ async function runDownloads(videos: TikTokVideo[], touched: Set<string>, options
   }
   progress.done();
   await saveVideos(next);
-  console.log(`Media: ${downloaded} downloaded, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
+  const indent = label ? "  " : "";
+  console.log(`${indent}Media: ${downloaded} downloaded, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
 }
 
-async function runTranscription(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof transcribeVideo>[1]): Promise<TikTokVideo[]> {
+async function runTranscription(videos: TikTokVideo[], touched: Set<string>, options: Parameters<typeof transcribeVideo>[1], label?: string): Promise<TikTokVideo[]> {
   const next = [...videos];
   const total = next.filter((video) => touched.has(video.id)).length;
-  const progress = createProgress({ total, label: "transcribe" });
+  const progress = createProgress({ total, label: progressLabel("transcribe", label) });
   let transcribed = 0;
   let present = 0;
   const failed: string[] = [];
@@ -666,14 +658,15 @@ async function runTranscription(videos: TikTokVideo[], touched: Set<string>, opt
   }
   progress.done();
   await saveVideos(next);
-  console.log(`Transcripts: ${transcribed} transcribed, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
+  const indent = label ? "  " : "";
+  console.log(`${indent}Transcripts: ${transcribed} transcribed, ${present} already present${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
 }
 
-async function runClassification(videos: TikTokVideo[], touched: Set<string>, options: { engine?: "regex" | "ollama"; model?: string; ollamaBaseUrl?: string }): Promise<TikTokVideo[]> {
+async function runClassification(videos: TikTokVideo[], touched: Set<string>, options: { engine?: "regex" | "ollama"; model?: string; ollamaBaseUrl?: string }, label?: string): Promise<TikTokVideo[]> {
   const next = [...videos];
   const total = next.filter((video) => touched.has(video.id)).length;
-  const progress = createProgress({ total, label: "classify" });
+  const progress = createProgress({ total, label: progressLabel("classify", label) });
   let classified = 0;
   const failed: string[] = [];
   for (const [idx, video] of next.entries()) {
@@ -690,8 +683,252 @@ async function runClassification(videos: TikTokVideo[], touched: Set<string>, op
   }
   progress.done();
   await saveVideos(next);
-  console.log(`Classified ${classified} videos${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
+  const indent = label ? "  " : "";
+  console.log(`${indent}Classified ${classified} videos${failed.length ? `, ${failed.length} failed (${failed.join(", ")})` : ""} (${total} total).`);
   return next;
+}
+
+interface SyncGroup {
+  label: string;
+  videos: TikTokVideo[];
+}
+
+interface SyncPipelineOptions {
+  rebuild?: boolean;
+  download?: boolean;
+  audio?: boolean;
+  transcribe?: boolean;
+  classify?: boolean;
+  ytDlp?: string;
+  proxy?: string;
+  ytDlpCookies?: string;
+  cookiesFromBrowser?: string;
+  sttEngine?: string;
+  sttCommand?: string;
+  sttModel?: string;
+  language?: string;
+  engine?: "regex" | "ollama";
+  model?: string;
+  ollamaUrl?: string;
+}
+
+export function hasExplicitSource(options: Record<string, unknown>): boolean {
+  return (
+    (options.collection as string[]).length > 0 ||
+    (options.playlist as string[]).length > 0 ||
+    (options.liked as string[]).length > 0 ||
+    (options.user as string[]).length > 0 ||
+    (options.searchVideo as string[]).length > 0 ||
+    (options.url as string[]).length > 0 ||
+    Boolean(options.urlsFile) ||
+    Boolean(options.input)
+  );
+}
+
+async function runSyncPipeline(groups: SyncGroup[], options: SyncPipelineOptions): Promise<void> {
+  const showPerGroup = groups.length > 1;
+  let videos = await loadVideos();
+
+  for (const [index, group] of groups.entries()) {
+    const groupLabel = showPerGroup ? group.label : undefined;
+    if (showPerGroup) console.log(c.heading(group.label));
+
+    const sync = await mergeVideos(group.videos, { rebuild: Boolean(options.rebuild) && index === 0 });
+    console.log(
+      showPerGroup
+        ? `  Synced ${sync.added} new, ${sync.updated} updated, ${sync.unchanged} unchanged`
+        : `Synced ${sync.added} new, ${sync.updated} updated, ${sync.unchanged} unchanged (${sync.total} total).`,
+    );
+
+    videos = await loadVideos();
+    const touched = new Set(sync.ids);
+    if (options.download) {
+      videos = await runDownloads(
+        videos,
+        touched,
+        {
+          ytDlp: options.ytDlp,
+          proxy: options.proxy,
+          cookiesFile: options.ytDlpCookies,
+          cookiesFromBrowser: options.cookiesFromBrowser,
+          audioOnly: Boolean(options.audio),
+        },
+        groupLabel,
+      );
+    }
+    if (options.transcribe) {
+      videos = await runTranscription(
+        videos,
+        touched,
+        {
+          engine: options.sttEngine as SttEngine,
+          command: options.sttCommand,
+          model: options.sttModel,
+          language: options.language,
+        },
+        groupLabel,
+      );
+    }
+    if (options.classify) {
+      videos = await runClassification(
+        videos,
+        touched,
+        {
+          engine: options.engine,
+          model: options.model,
+          ollamaBaseUrl: options.ollamaUrl,
+        },
+        groupLabel,
+      );
+    }
+    if (showPerGroup) console.log("");
+  }
+
+  const index = await saveSearchIndex(videos);
+  console.log(`Indexed ${index.recordCount} videos at ${toDisplayPath(searchIndexPath())}.`);
+}
+
+function printBookmarkFolders(folders: BookmarkFolder[], options: { json: boolean }): void {
+  if (options.json) {
+    console.log(
+      JSON.stringify(
+        folders.map((folder) => ({
+          id: folder.id,
+          name: folder.name,
+          itemCount: folder.itemCount ?? null,
+          url: folder.url ?? null,
+          kind: folder.kind,
+        })),
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+  const rows = folders.map((folder) => [
+    folder.name,
+    folder.kind,
+    typeof folder.itemCount === "number" ? String(folder.itemCount) : "",
+    c.muted(folder.id),
+  ]);
+  console.log(table(["Name", "Kind", "Videos", "ID"], rows));
+}
+
+async function runInteractiveSync(options: Record<string, any>, cookie: string | undefined, auth: SavedAuth): Promise<void> {
+  if (options.json) setColorEnabled(false);
+  if (!cookie) {
+    throw new Error("No cookie saved. Run `tw auth from-browser` (or `tw auth set --cookie ...`) to enable bookmark sync.");
+  }
+
+  let secUid = auth.secUid;
+  if (!secUid) {
+    secUid = await resolveSecUid(cookie, auth.username);
+    if (secUid) await saveAuth({ ...auth, secUid, updatedAt: new Date().toISOString() });
+  }
+
+  const folders = await fetchBookmarkFolders({
+    cookie,
+    username: auth.username,
+    secUid,
+    proxy: options.proxy,
+    limit: Number(options.limit),
+  });
+
+  if (folders.length === 0) {
+    console.log("No bookmarks found. Make sure your cookie is fresh (try `tw auth refresh`).");
+    return;
+  }
+
+  if (options.list) {
+    printBookmarkFolders(folders, { json: Boolean(options.json) });
+    return;
+  }
+
+  let selected: BookmarkFolder[];
+  if (options.all) {
+    selected = folders;
+  } else if (isInteractive()) {
+    intro(`Found ${folders.length} bookmarks${auth.username ? ` for @${auth.username}` : ""}`);
+    const picked = await promptFolderSelection(folders);
+    if (!picked) {
+      cancelled("Sync cancelled.");
+      return;
+    }
+    selected = picked;
+  } else {
+    printBookmarkFolders(folders, { json: false });
+    console.log("");
+    console.log(
+      `${c.muted("Hint")} run \`tokwise sync --all\` to sync everything, \`--collection <id>\` for one, or \`--list --json\` for machine output.`,
+    );
+    return;
+  }
+
+  if (selected.length === 0) {
+    console.log("Nothing selected.");
+    return;
+  }
+
+  const pipelineFlagsGiven = Boolean(options.download || options.transcribe || options.classify);
+  if (isInteractive() && !options.all && !pipelineFlagsGiven) {
+    const engines = await detectEngines({ ytDlp: options.ytDlp });
+    const pipeline = await promptPipelineSelection({
+      download: engines.ytDlp,
+      transcribe: engines.ytDlp && engines.whisper,
+      classify: true,
+    });
+    if (!pipeline) {
+      cancelled("Sync cancelled.");
+      return;
+    }
+    options.download = pipeline.download;
+    options.transcribe = pipeline.transcribe;
+    options.classify = pipeline.classify;
+    if (pipeline.download && !options.audio) options.audio = true;
+  }
+
+  const requestDelayMs = Number(options.requestDelay);
+  const fetchOptions = {
+    cookie,
+    username: auth.username,
+    secUid,
+    proxy: options.proxy as string | undefined,
+    limit: Number(options.limit),
+    page: Number(options.page),
+    pages: options.pages == null ? undefined : Number(options.pages),
+    requestDelayMs,
+    maxRetries: Number(options.maxRetries),
+  };
+
+  const groups: SyncGroup[] = [];
+  const failed: string[] = [];
+  for (const [index, folder] of selected.entries()) {
+    if (index > 0 && requestDelayMs > 0) await sleep(requestDelayMs);
+    try {
+      const videos = await fetchCollection(folder.url ?? folder.id, fetchOptions);
+      if (videos.length > 0) groups.push({ label: folder.name, videos });
+    } catch (error) {
+      failed.push(folder.name);
+      console.error(c.warn(`Skipped "${folder.name}": ${(error as Error).message}`));
+    }
+  }
+
+  if (failed.length > 0) {
+    const names = failed.map((name) => `"${name}"`).join(", ");
+    const suggestion = Math.max(1500, requestDelayMs * 2);
+    console.error(
+      c.warn(
+        `${failed.length} collection${failed.length === 1 ? "" : "s"} skipped after retries: ${names}. Re-run or try --request-delay ${suggestion}.`,
+      ),
+    );
+  }
+
+  if (groups.length === 0) {
+    console.log("No videos found in the selected bookmarks.");
+    return;
+  }
+
+  await runSyncPipeline(groups, options);
 }
 
 async function readImport(filePath: string): Promise<TikTokVideo[]> {
@@ -942,7 +1179,7 @@ async function showDashboard(): Promise<void> {
       indexExists: await fileExists(searchIndexPath()),
     }),
     "",
-    `${c.muted("Next")}    tokwise sync --collection <url> --download --audio --transcribe --classify`,
+    `${c.muted("Next")}    tokwise sync ${c.muted("(pick your bookmarks)")} ${c.muted("|")} tokwise sync --collection <url> --download --audio --transcribe --classify`,
     `${c.muted("Explore")} tokwise search "life advice" ${c.muted("|")} tokwise viz ${c.muted("|")} tokwise wiki`,
   ].join("\n"));
 }

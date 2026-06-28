@@ -152,6 +152,7 @@ export async function savePreferences(preferences: Preferences): Promise<void> {
 export interface SavedAuth {
   cookie?: string;
   username?: string;
+  secUid?: string;
   updatedAt?: string;
   source?: "manual" | "browser";
   browser?: string;
