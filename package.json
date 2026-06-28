@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "description": "Local-first CLI for syncing, downloading, transcribing, searching, and analyzing saved short-form videos.",
   "type": "module",
+  "author": "Sebastian Crossa",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sebastiancrossa/tokwise-cli.git"
+  },
+  "homepage": "https://github.com/sebastiancrossa/tokwise-cli#readme",
+  "bugs": {
+    "url": "https://github.com/sebastiancrossa/tokwise-cli/issues"
+  },
   "bin": {
     "tokwise": "dist/cli.js",
     "tw": "dist/cli.js"
