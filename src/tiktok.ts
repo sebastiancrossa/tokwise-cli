@@ -1,13 +1,20 @@
-import type { JsonObject, JsonValue, TikTokSource, TikTokVideo } from "./types.js";
+import type { BookmarkFolder, BookmarkFolderKind, JsonObject, JsonValue, TikTokSource, TikTokVideo } from "./types.js";
 import { stableHash, uniqueStrings } from "./store.js";
+import { fetchWithRetry, sleep } from "./http.js";
+
+const WEB_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36";
 
 interface TikTokFetchOptions {
   cookie?: string;
   username?: string;
+  secUid?: string;
   proxy?: string;
   limit?: number;
   page?: number;
   pages?: number;
+  requestDelayMs?: number;
+  maxRetries?: number;
 }
 
 interface SourceContext {
@@ -138,16 +145,19 @@ async function fetchPaged(
   const limit = options.limit ?? 30;
   const pageStart = options.page ?? 1;
   const maxPages = options.pages ?? Math.ceil(limit / 30);
+  const requestDelayMs = options.requestDelayMs ?? 0;
   const videos: TikTokVideo[] = [];
   let page = pageStart;
 
   for (let i = 0; i < maxPages && videos.length < limit; i += 1) {
+    if (i > 0 && requestDelayMs > 0) await sleep(requestDelayMs);
     const response = await fn(idOrUrl, {
       page,
       count: Math.min(30, limit - videos.length),
       postLimit: Math.min(30, limit - videos.length),
       cookie: options.cookie,
       proxy: options.proxy,
+      maxRetries: options.maxRetries,
     });
     const items = extractItemsFromSuccessfulResponse(response, context.source);
     videos.push(...items.map((item) => normalizeVideo(item, context)));
@@ -208,17 +218,20 @@ async function fetchCollectionWithCookie(idOrUrl: string, options: UnknownRecord
     webcast_language: "en",
   });
 
-  const response = await fetch(`https://www.tiktok.com/api/collection/item_list/?${params.toString()}`, {
-    method: "GET",
-    headers: {
-      "user-agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-      accept: "application/json, text/plain, */*",
-      "accept-language": "en-US,en;q=0.9",
-      cookie: String(options.cookie ?? ""),
-      referer: looksLikeUrl(idOrUrl) ? idOrUrl : "https://www.tiktok.com/",
+  const response = await fetchWithRetry(
+    `https://www.tiktok.com/api/collection/item_list/?${params.toString()}`,
+    {
+      method: "GET",
+      headers: {
+        "user-agent": WEB_USER_AGENT,
+        accept: "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.9",
+        cookie: String(options.cookie ?? ""),
+        referer: looksLikeUrl(idOrUrl) ? idOrUrl : "https://www.tiktok.com/",
+      },
     },
-  });
+    { maxRetries: numberValue(options.maxRetries) },
+  );
 
   if (!response.ok) {
     return {
@@ -230,15 +243,49 @@ async function fetchCollectionWithCookie(idOrUrl: string, options: UnknownRecord
   return response.json() as Promise<unknown>;
 }
 
-export function extractUsernameFromRehydrationHtml(html: string): string | undefined {
+function parseRehydrationScope(html: string): UnknownRecord | undefined {
   const match = html.match(/__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)<\/script>/s);
   if (!match || !match[1]) return undefined;
   try {
     const data = asRecord(JSON.parse(match[1]));
-    const scope = asRecord(data?.["__DEFAULT_SCOPE__"]);
-    const appContext = asRecord(scope?.["webapp.app-context"]);
-    const user = asRecord(appContext?.user);
-    return stringValue(user?.uniqueId);
+    return asRecord(data?.["__DEFAULT_SCOPE__"]);
+  } catch {
+    return undefined;
+  }
+}
+
+export function extractUsernameFromRehydrationHtml(html: string): string | undefined {
+  const scope = parseRehydrationScope(html);
+  const appContext = asRecord(scope?.["webapp.app-context"]);
+  const user = asRecord(appContext?.user);
+  return stringValue(user?.uniqueId);
+}
+
+export function extractSecUidFromRehydrationHtml(html: string): string | undefined {
+  const scope = parseRehydrationScope(html);
+  const appContext = asRecord(scope?.["webapp.app-context"]);
+  const contextUser = asRecord(appContext?.user);
+  const fromContext = stringValue(contextUser?.secUid);
+  if (fromContext) return fromContext;
+  const userDetail = asRecord(scope?.["webapp.user-detail"]);
+  const userInfo = asRecord(userDetail?.userInfo);
+  const detailUser = asRecord(userInfo?.user);
+  return stringValue(detailUser?.secUid);
+}
+
+async function fetchRehydrationHtml(url: string, cookie: string): Promise<string | undefined> {
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "user-agent": WEB_USER_AGENT,
+        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "accept-language": "en-US,en;q=0.9",
+        cookie,
+      },
+    });
+    if (!response.ok) return undefined;
+    return await response.text();
   } catch {
     return undefined;
   }
@@ -246,22 +293,167 @@ export function extractUsernameFromRehydrationHtml(html: string): string | undef
 
 export async function detectLoggedInUsername(cookie: string, proxy?: string): Promise<string | undefined> {
   if (!cookie) return undefined;
-  try {
-    const response = await fetch("https://www.tiktok.com/", {
+  const html = await fetchRehydrationHtml("https://www.tiktok.com/", cookie);
+  return html ? extractUsernameFromRehydrationHtml(html) : undefined;
+}
+
+export async function resolveSecUid(cookie: string, username?: string, proxy?: string): Promise<string | undefined> {
+  if (!cookie) return undefined;
+  const home = await fetchRehydrationHtml("https://www.tiktok.com/", cookie);
+  const fromHome = home ? extractSecUidFromRehydrationHtml(home) : undefined;
+  if (fromHome) return fromHome;
+  if (username) {
+    const profile = await fetchRehydrationHtml(`https://www.tiktok.com/@${username}`, cookie);
+    const fromProfile = profile ? extractSecUidFromRehydrationHtml(profile) : undefined;
+    if (fromProfile) return fromProfile;
+  }
+  return undefined;
+}
+
+const COLLECTION_LIST_PAGE_SIZE = 30;
+const MAX_BOOKMARK_FOLDERS = 500;
+const FAVORITES_NAMES = new Set(["favorites", "favorite", "favourites", "favourite"]);
+
+export async function fetchBookmarkFolders(options: TikTokFetchOptions): Promise<BookmarkFolder[]> {
+  const { cookie } = options;
+  if (!cookie) {
+    throw new Error("A browser cookie is required to list bookmarks. Run `tw auth from-browser` first.");
+  }
+  const secUid = options.secUid ?? (await resolveSecUid(cookie, options.username, options.proxy));
+  if (!secUid) {
+    throw new Error(
+      "Could not resolve your TikTok secUid. Run `tw auth from-browser` (or `tw auth set-username <handle>`) and try again.",
+    );
+  }
+
+  const folders: BookmarkFolder[] = [];
+  const seen = new Set<string>();
+  let cursor = "0";
+
+  const requestDelayMs = options.requestDelayMs ?? 0;
+  let firstPage = true;
+  while (folders.length < MAX_BOOKMARK_FOLDERS) {
+    if (!firstPage && requestDelayMs > 0) await sleep(requestDelayMs);
+    firstPage = false;
+    const response = await fetchCollectionList(secUid, cursor, COLLECTION_LIST_PAGE_SIZE, cookie, options.maxRetries);
+    assertSuccessfulResponse(response, "collection");
+    const entries = extractCollectionListEntries(response);
+    for (const entry of entries) {
+      const folder = normalizeBookmarkFolder(entry, options.username);
+      if (!folder || seen.has(folder.id)) continue;
+      seen.add(folder.id);
+      folders.push(folder);
+    }
+    if (!hasMore(response) || entries.length === 0) break;
+    const next = readCursor(response);
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+
+  return folders;
+}
+
+async function fetchCollectionList(
+  secUid: string,
+  cursor: string,
+  count: number,
+  cookie: string,
+  maxRetries?: number,
+): Promise<unknown> {
+  const params = new URLSearchParams({
+    WebIdLastTime: String(Date.now()),
+    aid: "1988",
+    app_language: "en",
+    app_name: "tiktok_web",
+    browser_language: "en-US",
+    browser_name: "Mozilla",
+    browser_online: "true",
+    browser_platform: "MacIntel",
+    browser_version:
+      "5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    channel: "tiktok_web",
+    cookie_enabled: "true",
+    count: String(count),
+    cursor,
+    device_platform: "web_pc",
+    focus_state: "true",
+    from_page: "user",
+    history_len: "3",
+    is_fullscreen: "false",
+    is_page_visible: "true",
+    language: "en",
+    needPinnedItemIds: "true",
+    os: "mac",
+    secUid,
+    tz_name: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+    user_is_login: "true",
+    webcast_language: "en",
+  });
+
+  const response = await fetchWithRetry(
+    `https://www.tiktok.com/api/user/collection_list/?${params.toString()}`,
+    {
       method: "GET",
       headers: {
-        "user-agent":
-          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-        accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "user-agent": WEB_USER_AGENT,
+        accept: "application/json, text/plain, */*",
         "accept-language": "en-US,en;q=0.9",
         cookie,
+        referer: "https://www.tiktok.com/",
       },
-    });
-    if (!response.ok) return undefined;
-    return extractUsernameFromRehydrationHtml(await response.text());
-  } catch {
-    return undefined;
+    },
+    { maxRetries },
+  );
+
+  if (!response.ok) {
+    return {
+      status: "error",
+      message: `Source returned HTTP ${response.status} ${response.statusText}`,
+    };
   }
+
+  return response.json() as Promise<unknown>;
+}
+
+export function extractCollectionListEntries(response: unknown): UnknownRecord[] {
+  const root = asRecord(response);
+  const result = asRecord(root?.result);
+  const candidates = [root?.collectionList, root?.collection_list, result?.collectionList, result?.collection_list];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate.flatMap((item) => (asRecord(item) ? [asRecord(item) as UnknownRecord] : []));
+    }
+  }
+  return [];
+}
+
+export function normalizeBookmarkFolder(entry: UnknownRecord, username?: string): BookmarkFolder | undefined {
+  const id = stringValue(entry.collectionId) ?? stringValue(entry.id) ?? stringValue(entry.collection_id);
+  if (!id) return undefined;
+  const name = stringValue(entry.name) ?? stringValue(entry.collectionName) ?? "Untitled";
+  const itemCount =
+    numberValue(entry.total) ??
+    numberValue(entry.itemCount) ??
+    numberValue(entry.itemTotal) ??
+    numberValue(entry.videoCount);
+  const cover = firstString(entry.cover) ?? stringValue(entry.cover) ?? firstString(entry.coverUrl) ?? stringValue(entry.coverUrl);
+  const kind: BookmarkFolderKind = FAVORITES_NAMES.has(name.trim().toLowerCase()) ? "favorites" : "collection";
+  const url = username ? `https://www.tiktok.com/@${username}/collection/${slugifyCollection(name, id)}` : undefined;
+  return { id, name, url, itemCount, cover, kind };
+}
+
+function slugifyCollection(name: string, id: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug ? `${slug}-${id}` : id;
+}
+
+function readCursor(response: unknown): string | undefined {
+  const root = asRecord(response);
+  const result = asRecord(root?.result);
+  return stringValue(result?.cursor) ?? stringValue(root?.cursor);
 }
 
 export function extractItemsFromSuccessfulResponse(response: unknown, source: TikTokSource): UnknownRecord[] {
