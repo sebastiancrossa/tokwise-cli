@@ -7,9 +7,13 @@ Tokwise syncs clips into local files, builds a search index, downloads media, tr
 ## Install
 
 ```bash
-npm install
-npm run build
-npm link
+npm install -g tokwise
+```
+
+Or run without installing:
+
+```bash
+npx tokwise status
 ```
 
 Main command:
@@ -25,6 +29,14 @@ tw status
 ```
 
 Requires Node.js 20+. Media download requires `yt-dlp` on PATH. Transcription requires either OpenAI Whisper CLI, whisper.cpp, or a custom command.
+
+### Develop
+
+```bash
+npm install
+npm run build
+npm link
+```
 
 ## Quick Start
 
