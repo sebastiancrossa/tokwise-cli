@@ -14,7 +14,7 @@ function video(overrides: Partial<TikTokVideo> & { id: string }): TikTokVideo {
   };
 }
 
-test("videoReference combines author, date, title, and short id", () => {
+test("videoReference combines author and date", () => {
   const ref = videoReference(
     video({
       id: "7570832472749952278",
@@ -23,23 +23,23 @@ test("videoReference combines author, date, title, and short id", () => {
       author: { username: "thephilosopher" },
     }),
   );
-  assert.equal(ref, '@thephilosopher \u00b7 Mar 2024 \u2014 "Why fiction beats self-help"  #49952278');
+  assert.equal(ref, "@thephilosopher (Mar 2024)");
 });
 
-test("videoReference drops the date segment when no timestamp exists", () => {
+test("videoReference omits date when no timestamp exists", () => {
   const ref = videoReference(
     video({ id: "123456789012", description: "A clip", author: { username: "x" } }),
   );
-  assert.equal(ref, '@x \u2014 "A clip"  #56789012');
+  assert.equal(ref, "@x");
 });
 
 test("videoReference falls back to display name then unknown", () => {
   const withDisplay = videoReference(
     video({ id: "12345678", description: "Clip", author: { displayName: "The Author" } }),
   );
-  assert.equal(withDisplay, 'The Author \u2014 "Clip"  #12345678');
+  assert.equal(withDisplay, "The Author");
   const noAuthor = videoReference(video({ id: "12345678", description: "Clip" }));
-  assert.equal(noAuthor, 'unknown \u2014 "Clip"  #12345678');
+  assert.equal(noAuthor, "unknown");
 });
 
 test("videoTitle falls back through summary, topic, then Untitled clip", () => {

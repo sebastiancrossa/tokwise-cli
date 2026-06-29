@@ -25,7 +25,7 @@ export function skillContent(): string {
     "",
     "## Grounding",
     "",
-    "Cite clips by their readable reference (`@author \u00b7 Mon YYYY \u2014 \"title\"`, optionally with the trailing short id like `#49952278`) or by Markdown page path when drawing conclusions. Run `tokwise show <short-id-or-url>` to pull a clip back up. Treat transcripts as user-owned local context and do not assume videos are public.",
+    "Cite clips by their readable reference (`@author (Mon YYYY)`) and the clip URL, or by Markdown page path, when drawing conclusions. Run `tokwise show <id-or-url>` to pull a clip back up. Treat transcripts as user-owned local context and do not assume videos are public.",
     "",
   ].join("\n");
 }

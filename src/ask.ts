@@ -49,7 +49,7 @@ async function answerWithOllama(question: string, results: SearchResult[], optio
     .join("\n\n");
   const prompt = [
     "Answer the user's question using only the saved clip evidence below.",
-    "Cite clips by their readable reference (e.g. @author \u00b7 Mon YYYY \u2014 \"title\") when making claims. If evidence is thin, say so.",
+    "Cite clips by their readable reference (e.g. @author (Mon YYYY)) when making claims; include the clip's Source URL when a claim needs to be traceable. If evidence is thin, say so.",
     "",
     `Question: ${question}`,
     "",

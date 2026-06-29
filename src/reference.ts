@@ -27,9 +27,7 @@ export function videoReference(video: TikTokVideo): string {
     ? `@${video.author.username}`
     : video.author?.displayName || "unknown";
   const date = referenceDate(video);
-  const title = videoTitle(video);
-  const head = [author, date].filter(Boolean).join(" \u00b7 ");
-  return `${head} \u2014 "${title}"  #${shortId(video)}`;
+  return date ? `${author} (${date})` : author;
 }
 
 export function formatReference(video: TikTokVideo): string {
@@ -37,9 +35,7 @@ export function formatReference(video: TikTokVideo): string {
     ? c.accent(`@${video.author.username}`)
     : c.muted(video.author?.displayName || "unknown");
   const date = referenceDate(video);
-  const datePart = date ? ` ${c.muted("\u00b7")} ${c.muted(date)}` : "";
-  const title = c.value(`"${videoTitle(video)}"`);
-  return `${author}${datePart} ${c.muted("\u2014")} ${title}  ${c.muted(`#${shortId(video)}`)}`;
+  return date ? `${author} ${c.muted(`(${date})`)}` : author;
 }
 
 function referenceDate(video: TikTokVideo): string {
